@@ -7,3 +7,4 @@ djangorestframework-stubs==3.16.8
 sqlparse==0.5.5
 types-PyYAML==6.0.12.20250915
 typing_extensions==4.15.0
+gunicorn==23.0.0
