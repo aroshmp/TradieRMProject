@@ -2,7 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 """
-core/views.py – All views in one place.
+tradiePrototype/views.py – All views in one place.
 """
 
 import logging
