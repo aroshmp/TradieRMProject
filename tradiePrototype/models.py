@@ -16,6 +16,7 @@ All models for the CRM prototype in one place:
 """
 
 from django.db import models
+from django.contrib.auth.models import User
 
 
 # ── Customers ─────────────────────────────────────────────────────────────────
@@ -280,3 +281,36 @@ class AIResponseSuggestion(models.Model):
     def is_sendable(self):
         """BR5 – only approved suggestions may be dispatched."""
         return self.approval_status == self.ApprovalStatus.APPROVED
+
+
+# ── User Profiles ─────────────────────────────────────────────────────────────
+
+class UserProfile(models.Model):
+    """Links Django's built-in User to a role: administrator, technician, or customer."""
+
+    class Role(models.TextChoices):
+        ADMINISTRATOR = 'administrator', 'Administrator'
+        TECHNICIAN = 'technician', 'Technician'
+        CUSTOMER = 'customer', 'Customer'
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    role = models.CharField(max_length=20, choices=Role.choices)
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} ({self.role})"
+
+    @property
+    def is_admin(self):
+        return self.role == self.Role.ADMINISTRATOR
+
+    @property
+    def is_technician(self):
+        return self.role == self.Role.TECHNICIAN
+
+    @property
+    def is_customer(self):
+        return self.role == self.Role.CUSTOMER
