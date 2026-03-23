@@ -23,21 +23,26 @@ from tradiePrototype.views import (
     JobViewSet, JobPartViewSet, ScheduleBlockViewSet,
     InvoiceViewSet, ClientRequestViewSet,
     AIResponseSuggestionViewSet, webhook_intake,
+    register_customer, register_technician, logout, me,
 )
 
 router = DefaultRouter()
-router.register(r'customers',       CustomerViewSet,            basename='customer')
-router.register(r'technicians',     TechnicianViewSet,          basename='technician')
-router.register(r'jobs',            JobViewSet,                 basename='job')
-router.register(r'job-parts',       JobPartViewSet,             basename='jobpart')
-router.register(r'schedule',        ScheduleBlockViewSet,       basename='schedule')
-router.register(r'invoices',        InvoiceViewSet,             basename='invoice')
-router.register(r'client-requests', ClientRequestViewSet,       basename='clientrequest')
-router.register(r'ai-suggestions',  AIResponseSuggestionViewSet, basename='aisuggestion')
+router.register(r'customers',        CustomerViewSet,             basename='customer')
+router.register(r'technicians',      TechnicianViewSet,           basename='technician')
+router.register(r'jobs',             JobViewSet,                  basename='job')
+router.register(r'job-parts',        JobPartViewSet,              basename='jobpart')
+router.register(r'schedule',         ScheduleBlockViewSet,        basename='schedule')
+router.register(r'invoices',         InvoiceViewSet,              basename='invoice')
+router.register(r'client-requests',  ClientRequestViewSet,        basename='clientrequest')
+router.register(r'ai-suggestions',   AIResponseSuggestionViewSet, basename='aisuggestion')
 
 urlpatterns = [
-    path('admin/',                       admin.site.urls),
-    path('api/',                         include(router.urls)),
-    path('api/auth/login/',              obtain_auth_token,  name='api-token-auth'),
-    path('api/webhook/job-request/',     webhook_intake, name='webhook-intake'),
+    path('admin/',                        admin.site.urls),
+    path('api/',                          include(router.urls)),
+    path('api/auth/login/',               obtain_auth_token,   name='api-token-auth'),
+    path('api/auth/logout/',              logout,              name='api-logout'),
+    path('api/auth/register/customer/',   register_customer,   name='api-register-customer'),
+    path('api/auth/register/technician/', register_technician, name='api-register-technician'),
+    path('api/auth/me/',                  me,                  name='api-me'),
+    path('api/webhook/job-request/',      webhook_intake,      name='webhook-intake'),
 ]
