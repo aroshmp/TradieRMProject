@@ -17,6 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from rest_framework.authtoken.views import obtain_auth_token
 from tradiePrototype.views import (
     CustomerViewSet, TechnicianViewSet,
     JobViewSet, JobPartViewSet, ScheduleBlockViewSet,
@@ -37,5 +38,6 @@ router.register(r'ai-suggestions',  AIResponseSuggestionViewSet, basename='aisug
 urlpatterns = [
     path('admin/',                       admin.site.urls),
     path('api/',                         include(router.urls)),
+    path('api/auth/login/',              obtain_auth_token,  name='api-token-auth'),
     path('api/webhook/job-request/',     webhook_intake, name='webhook-intake'),
 ]

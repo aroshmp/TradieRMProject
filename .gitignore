@@ -19,3 +19,6 @@ staticfiles/
 
 # OS
 .DS_Store
+
+# copliot
+*.xml
