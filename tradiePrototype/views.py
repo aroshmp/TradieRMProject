@@ -319,13 +319,31 @@ def register_customer(request):
     phone    = request.data.get('phone', '')
     address  = request.data.get('address', '')
 
+    # ── Validations ───────────────────────────────────────────────
     if not username or not password:
         return Response({'error': 'Username and password are required.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if len(password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not any(c.isupper() for c in password):
+        return Response({'error': 'Password must contain at least one uppercase letter.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not any(c.isdigit() for c in password):
+        return Response({'error': 'Password must contain at least one number.'},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.filter(username=username).exists():
         return Response({'error': 'Username already exists.'},
                         status=status.HTTP_400_BAD_REQUEST)
+
+    if email and User.objects.filter(email=email).exists():
+        return Response({'error': 'Email already exists.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    # ──────────────────────────────────────────────────────────────
 
     user = User.objects.create_user(username=username, password=password, email=email)
     UserProfile.objects.create(
@@ -355,13 +373,31 @@ def register_technician(request):
     phone    = request.data.get('phone', '')
     address  = request.data.get('address', '')
 
+    # ── Validations ───────────────────────────────────────────────
     if not username or not password:
         return Response({'error': 'Username and password are required.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if len(password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not any(c.isupper() for c in password):
+        return Response({'error': 'Password must contain at least one uppercase letter.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not any(c.isdigit() for c in password):
+        return Response({'error': 'Password must contain at least one number.'},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.filter(username=username).exists():
         return Response({'error': 'Username already exists.'},
                         status=status.HTTP_400_BAD_REQUEST)
+
+    if email and User.objects.filter(email=email).exists():
+        return Response({'error': 'Email already exists.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    # ──────────────────────────────────────────────────────────────
 
     user = User.objects.create_user(username=username, password=password, email=email)
     UserProfile.objects.create(
