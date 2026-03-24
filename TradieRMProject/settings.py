@@ -45,9 +45,11 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'tradiePrototype',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -148,3 +150,8 @@ OLLAMA_MODEL = 'llama3.2'  # swap for mistral, gemma2, phi3, etc.
 # --- Email / Webhook confirmation (BR3) ---
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # swap for SMTP in production
 DEFAULT_FROM_EMAIL = 'noreply@example.com'
+
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
