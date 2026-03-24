@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.contrib import admin
 from .models import (
     Customer, Technician, Job, JobPart, ScheduleBlock,
-    Invoice, ClientRequest, AIResponseSuggestion,
+    Invoice, ClientRequest, AIResponseSuggestion, UserProfile,
 )
 
 
@@ -77,3 +77,10 @@ class AIResponseSuggestionAdmin(admin.ModelAdmin):
     list_display    = ['id', 'client_request', 'approval_status', 'reviewed_by_role', 'reviewed_at', 'sent_at']
     list_filter     = ['approval_status', 'reviewed_by_role']
     readonly_fields = ['created_at', 'updated_at', 'reviewed_at', 'sent_at']
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display  = ['user', 'role', 'phone']
+    list_filter   = ['role']
+    search_fields = ['user__username', 'user__email']
