@@ -1,22 +1,76 @@
-version: '3.8'
+version: '3.9'
 
 services:
-  web:
-    build: .
-    command: gunicorn --bind 0.0.0.0:8000 --workers 4 TradieRMProject.wsgi:application
-    ports:
-      - "8000:8000"
+  db:
+    image: postgres:16-alpine
+    container_name: tradie_db
     environment:
-      - DEBUG=False
-      - ALLOWED_HOSTS=localhost,127.0.0.1
+      POSTGRES_DB: ${DB_NAME:-tradie_db}
+      POSTGRES_USER: ${DB_USER:-tradie_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - tradie_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tradie_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tradie_web
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn --bind 0.0.0.0:8000 --workers 4 TradieRMProject.wsgi:application"
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    environment:
+      - DEBUG=${DEBUG:-False}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
+      - DATABASE_URL=postgresql://${DB_USER:-tradie_user}:${DB_PASSWORD:-secure_password_change_me}@db:5432/${DB_NAME:-tradie_db}
     volumes:
       - .:/app
       - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - tradie_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  nginx:
+    image: nginx:alpine
+    container_name: tradie_nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - static_volume:/app/staticfiles:ro
+      - media_volume:/app/media:ro
+    depends_on:
+      - web
+    networks:
+      - tradie_network
+    restart: unless-stopped
 
 volumes:
+  postgres_data:
   static_volume:
+  media_volume:
 
 networks:
   tradie_network:
