@@ -1,7 +1,16 @@
-from django.shortcuts import render
-
 """
-tradiePrototype/views.py – All views in one place.
+tradiePrototype/views.py
+
+All API views for the TradieRM backend.
+
+Viewsets handle standard CRUD operations via the DRF router.
+Function-based views handle authentication, webhook intake, and
+any action that falls outside standard resource CRUD.
+
+Role access summary:
+    Administrator  -- full access to all resources
+    Technician     -- own schedule, own jobs, AI suggestion approval
+    Customer       -- own jobs and invoices (read-only in most cases)
 """
 
 import logging
@@ -11,7 +20,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 
@@ -35,102 +44,109 @@ from .permissions import IsAdministrator, IsTechnician, IsCustomer, IsAdminOrTec
 logger = logging.getLogger(__name__)
 
 
-# ── Customers ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Customer ViewSet
+# ---------------------------------------------------------------------------
 
 class CustomerViewSet(viewsets.ModelViewSet):
-    """US1.1 – CRUD for customers. Admin only."""
+    """
+    UC1 -- Add Customer (and full CRUD).
+
+    Access: Administrator only.
+    Customers are created and managed exclusively by administrators.
+    Self-registration is not permitted.
+    """
+
     queryset           = Customer.objects.all()
     serializer_class   = CustomerSerializer
     permission_classes = [IsAdministrator]
 
 
-# ── Technicians ───────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Technician ViewSet
+# ---------------------------------------------------------------------------
 
 class TechnicianViewSet(viewsets.ModelViewSet):
-    """US1.2 – CRUD for technicians. Admin only."""
+    """
+    UC6 -- Add Technician (and full CRUD).
+
+    Access: Administrator only.
+    Only active technicians are returned. Inactive records are retained
+    for historical reference but excluded from listings.
+    Technicians are created and managed exclusively by administrators.
+    Self-registration is not permitted.
+    """
+
     queryset           = Technician.objects.filter(is_active=True)
     serializer_class   = TechnicianSerializer
     permission_classes = [IsAdministrator]
 
 
-# ── Jobs ──────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Job ViewSet
+# ---------------------------------------------------------------------------
 
 class JobViewSet(viewsets.ModelViewSet):
-    """US1.3 – Jobs. Admin full access. Customer sees own jobs only."""
+    """
+    UC2 -- Add Job (and full CRUD).
+
+    Access:
+        Administrator -- full access to all job records.
+        Customer      -- read access restricted to their own jobs only,
+                         matched by email address.
+
+    The create action uses a dedicated lightweight serializer (JobCreateSerializer)
+    to restrict the writable fields on creation. All other actions use the full
+    JobSerializer which includes nested parts and computed fields.
+    """
+
     queryset           = Job.objects.select_related('customer', 'technician').prefetch_related('parts')
     permission_classes = [IsAdministrator | IsCustomer]
 
     def get_serializer_class(self):
+        """Return the appropriate serializer based on the current action."""
         return JobCreateSerializer if self.action == 'create' else JobSerializer
 
     def get_queryset(self):
+        """
+        Restrict the queryset for customer-role users to their own jobs.
+        Administrators receive the full queryset with related objects pre-fetched.
+        """
         user    = self.request.user
         profile = getattr(user, 'profile', None)
+
         if profile and profile.is_customer:
             return Job.objects.filter(customer__email=user.email)
+
         return Job.objects.select_related('customer', 'technician').prefetch_related('parts')
 
     @action(detail=True, methods=['post'])
     def book(self, request, pk=None):
-        """US7.1/7.2 – Book a date/time. Auto-schedules travel blocks if technician assigned (BR6)."""
-        job             = self.get_object()
-        scheduled_start = request.data.get('scheduled_start')
-        scheduled_end   = request.data.get('scheduled_end')
+        """
+        UC3 -- Schedule the Booking.
 
-        if not scheduled_start or not scheduled_end:
-            return Response({'error': 'scheduled_start and scheduled_end are required.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+        Creates a ScheduleBlock for the job. If a technician is already
+        assigned, travel time blocks are automatically inserted before and
+        after the job block (BR6).
+        """
+        job  = self.get_object()
+        data = request.data.copy()
+        data['job'] = job.pk
 
-        job.scheduled_start = scheduled_start
-        job.scheduled_end   = scheduled_end
-        job.status          = Job.Status.BOOKED
-        job.save(update_fields=['scheduled_start', 'scheduled_end', 'status'])
+        result = schedule_job(job, data)
+        if result.get('error'):
+            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
 
-        blocks = []
-        if job.technician:
-            try:
-                blocks = schedule_job(job)
-            except ValueError as exc:
-                return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
-
-        return Response({
-            'job':             JobSerializer(job).data,
-            'schedule_blocks': ScheduleBlockSerializer(blocks, many=True).data,
-        })
-
-    @action(detail=True, methods=['post'], url_path='assign-technician')
-    def assign_technician(self, request, pk=None):
-        """US6.2 – Assign a technician and auto-calculate travel time."""
-        job           = self.get_object()
-        technician_id = request.data.get('technician_id')
-
-        if not technician_id:
-            return Response({'error': 'technician_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            technician = Technician.objects.get(pk=technician_id)
-        except Technician.DoesNotExist:
-            return Response({'error': 'Technician not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        job.technician = technician
-        job.save(update_fields=['technician'])
-
-        blocks = []
-        if job.scheduled_start and job.scheduled_end:
-            ScheduleBlock.objects.filter(job=job).delete()
-            try:
-                blocks = schedule_job(job)
-            except ValueError as exc:
-                return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
-
-        return Response({
-            'job':             JobSerializer(job).data,
-            'schedule_blocks': ScheduleBlockSerializer(blocks, many=True).data,
-        })
+        return Response(result, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """US10.1 – Mark job complete and auto-generate invoice (BR10)."""
+        """
+        UC -- Complete a Job and generate an invoice (BR10).
+
+        Expects 'labour_hours' and optionally 'labour_rate' in the request body.
+        Marks the job status as COMPLETED and triggers invoice generation.
+        """
         job          = self.get_object()
         labour_hours = float(request.data.get('labour_hours', 0))
         labour_rate  = request.data.get('labour_rate')
@@ -150,71 +166,129 @@ class JobViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-# ── Job Parts ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Job Part ViewSet
+# ---------------------------------------------------------------------------
 
 class JobPartViewSet(viewsets.ModelViewSet):
-    """US1.4 – CRUD for job parts. Admin only."""
+    """
+    UC5 -- Add New Inventory / Job Parts (and full CRUD).
+
+    Access: Administrator only.
+    Supports optional filtering by job via query parameter: ?job=<id>
+    """
+
     queryset           = JobPart.objects.all()
     serializer_class   = JobPartSerializer
     permission_classes = [IsAdministrator]
 
     def get_queryset(self):
+        """Filter parts by job ID if the 'job' query parameter is provided."""
         job_id = self.request.query_params.get('job')
         if job_id:
             return JobPart.objects.filter(job_id=job_id)
         return super().get_queryset()
 
 
-# ── Schedule ──────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Schedule Block ViewSet
+# ---------------------------------------------------------------------------
 
 class ScheduleBlockViewSet(viewsets.ReadOnlyModelViewSet):
-    """US6.1/6.3 – Admin sees all. Technician sees own only."""
+    """
+    UC3 / BR6 -- View technician schedule blocks.
+
+    Access:
+        Administrator -- all technicians' schedule blocks.
+        Technician    -- own schedule blocks only, matched by email address.
+
+    Read-only. Blocks are created indirectly via the Job.book action.
+    """
+
     queryset           = ScheduleBlock.objects.select_related('technician', 'job')
     serializer_class   = ScheduleBlockSerializer
     permission_classes = [IsAdminOrTechnician]
 
     def get_queryset(self):
+        """Restrict queryset to the requesting technician's own blocks if applicable."""
         user    = self.request.user
         profile = getattr(user, 'profile', None)
+
         if profile and profile.is_technician:
             return ScheduleBlock.objects.filter(technician__email=user.email)
+
         return ScheduleBlock.objects.select_related('technician', 'job')
 
 
-# ── Invoices ──────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Invoice ViewSet
+# ---------------------------------------------------------------------------
 
 class InvoiceViewSet(viewsets.ModelViewSet):
-    """US10.1/10.2 – View and manage invoices. Admin only."""
+    """
+    UC -- View and manage invoices (BR10).
+
+    Access: Administrator only.
+    Invoices are generated automatically when a job is completed.
+    The customer record is pre-fetched via the related job to avoid
+    additional queries during serialization.
+    """
+
     queryset           = Invoice.objects.select_related('job__customer')
     serializer_class   = InvoiceSerializer
     permission_classes = [IsAdministrator]
 
 
-# ── Client Requests ───────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Client Request ViewSet
+# ---------------------------------------------------------------------------
 
 class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
-    """View inbound client requests. Admin only."""
+    """
+    UC8 -- View inbound job requests received via the webhook (BR2).
+
+    Access: Administrator only.
+    Read-only. Records are created exclusively by the webhook_intake view.
+    """
+
     queryset           = ClientRequest.objects.all()
     serializer_class   = ClientRequestSerializer
     permission_classes = [IsAdministrator]
 
 
-# ── AI Suggestions ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# AI Response Suggestion ViewSet
+# ---------------------------------------------------------------------------
 
 class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
-    """US4.1/4.2 – Admin and Technician can approve/reject."""
+    """
+    UC -- Review and approve AI-generated response suggestions (BR4, BR5).
+
+    Access: Administrator and Technician.
+    Suggestions are created automatically by the webhook pipeline.
+    Administrators and Technicians may approve, reject, or send suggestions.
+    No suggestion may be sent without prior explicit approval (BR5).
+    """
+
     queryset           = AIResponseSuggestion.objects.select_related('client_request')
     serializer_class   = AIResponseSuggestionSerializer
     permission_classes = [IsAdminOrTechnician]
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        """US5.1/5.2 – Approve a suggestion (admin or technician)."""
+        """
+        Approve a pending AI suggestion (BR5 -- human approval gate).
+
+        The reviewer must supply a final_response and their role.
+        Only suggestions in PENDING status may be approved.
+        """
         suggestion = self.get_object()
 
         if suggestion.approval_status != AIResponseSuggestion.ApprovalStatus.PENDING:
-            return Response({'error': f"Already '{suggestion.approval_status}', not pending."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': f"Suggestion is already '{suggestion.approval_status}', not pending."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         serializer = ApproveResponseSerializer(data=request.data)
         if not serializer.is_valid():
@@ -231,27 +305,42 @@ class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        """US5.1/5.2 – Reject a suggestion."""
+        """
+        Reject a pending AI suggestion.
+
+        Records the reviewer and timestamp. The suggestion remains in the
+        system for audit purposes but will not be sent.
+        """
         suggestion = self.get_object()
+
         suggestion.approval_status     = AIResponseSuggestion.ApprovalStatus.REJECTED
         suggestion.reviewed_by_user_id = request.user.pk
         suggestion.reviewed_at         = timezone.now()
         suggestion.save()
+
         return Response(AIResponseSuggestionSerializer(suggestion).data)
 
     @action(detail=True, methods=['post'])
     def send(self, request, pk=None):
-        """BR5 – Dispatch an APPROVED suggestion. Blocked if not approved."""
+        """
+        Dispatch an approved suggestion to the client via email (BR5).
+
+        This action is blocked if the suggestion has not been approved.
+        On success the suggestion status transitions to SENT.
+        """
         suggestion = self.get_object()
 
         if not suggestion.is_sendable:
-            return Response({'error': 'Only approved suggestions can be sent.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Only approved suggestions may be sent.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         from django.core.mail import send_mail
         from django.conf import settings as django_settings
 
         client_request = suggestion.client_request
+
         send_mail(
             subject=f"Re: {client_request.subject or 'Your Enquiry'}",
             message=suggestion.final_response,
@@ -267,15 +356,24 @@ class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(AIResponseSuggestionSerializer(suggestion).data)
 
 
-# ── Webhook ───────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Webhook Intake
+# ---------------------------------------------------------------------------
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([])
 def webhook_intake(request):
     """
-    US2.2 – Receive inbound job request from external website (no auth required).
-    US3.1 – Auto-sends confirmation email on receipt.
-    US4.1 – Generates AI suggestion stored as PENDING.
+    UC8 -- Receive and acknowledge an inbound job request from the external website.
+
+    No authentication is required. The endpoint is intentionally public
+    to allow external systems to POST without credentials.
+
+    Pipeline on successful receipt:
+        1. Validate the inbound payload against WebhookInboundSerializer.
+        2. Persist the ClientRequest record with status RECEIVED.
+        3. Send an automatic acknowledgement email to the client (BR3).
+        4. Attempt AI suggestion generation; log and continue on failure (BR4).
     """
     serializer = WebhookInboundSerializer(data=request.data)
     if not serializer.is_valid():
@@ -294,12 +392,19 @@ def webhook_intake(request):
         status=ClientRequest.Status.RECEIVED,
     )
 
+    # Send the automatic confirmation email (BR3).
     send_confirmation(client_request)
 
+    # Generate an AI-suggested response for admin/technician review (BR4).
+    # A failure here must not prevent the webhook from returning a success response.
     try:
         generate_ai_suggestion(client_request)
     except Exception as exc:
-        logger.error("AI suggestion failed for ClientRequest #%s: %s", client_request.pk, exc)
+        logger.error(
+            "AI suggestion generation failed for ClientRequest #%s: %s",
+            client_request.pk,
+            exc,
+        )
 
     return Response({
         'message':    'Request received. A confirmation has been sent to your email.',
@@ -307,120 +412,19 @@ def webhook_intake(request):
     }, status=status.HTTP_201_CREATED)
 
 
-# ── Auth Views ────────────────────────────────────────────────────────────────
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def register_customer(request):
-    """Public self-registration for customers."""
-    username = request.data.get('username')
-    password = request.data.get('password')
-    email    = request.data.get('email', '')
-    phone    = request.data.get('phone', '')
-    address  = request.data.get('address', '')
-
-    # ── Validations ───────────────────────────────────────────────
-    if not username or not password:
-        return Response({'error': 'Username and password are required.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if len(password) < 8:
-        return Response({'error': 'Password must be at least 8 characters.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if not any(c.isupper() for c in password):
-        return Response({'error': 'Password must contain at least one uppercase letter.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if not any(c.isdigit() for c in password):
-        return Response({'error': 'Password must contain at least one number.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if User.objects.filter(username=username).exists():
-        return Response({'error': 'Username already exists.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if email and User.objects.filter(email=email).exists():
-        return Response({'error': 'Email already exists.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-    # ──────────────────────────────────────────────────────────────
-
-    user = User.objects.create_user(username=username, password=password, email=email)
-    UserProfile.objects.create(
-        user=user,
-        role=UserProfile.Role.CUSTOMER,
-        phone=phone,
-        address=address,
-    )
-
-    token, _ = Token.objects.get_or_create(user=user)
-
-    return Response({
-        'token':    token.key,
-        'username': user.username,
-        'email':    user.email,
-        'role':     UserProfile.Role.CUSTOMER,
-    }, status=status.HTTP_201_CREATED)
-
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def register_technician(request):
-    """Public self-registration for technicians."""
-    username = request.data.get('username')
-    password = request.data.get('password')
-    email    = request.data.get('email', '')
-    phone    = request.data.get('phone', '')
-    address  = request.data.get('address', '')
-
-    # ── Validations ───────────────────────────────────────────────
-    if not username or not password:
-        return Response({'error': 'Username and password are required.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if len(password) < 8:
-        return Response({'error': 'Password must be at least 8 characters.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if not any(c.isupper() for c in password):
-        return Response({'error': 'Password must contain at least one uppercase letter.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if not any(c.isdigit() for c in password):
-        return Response({'error': 'Password must contain at least one number.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if User.objects.filter(username=username).exists():
-        return Response({'error': 'Username already exists.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    if email and User.objects.filter(email=email).exists():
-        return Response({'error': 'Email already exists.'},
-                        status=status.HTTP_400_BAD_REQUEST)
-    # ──────────────────────────────────────────────────────────────
-
-    user = User.objects.create_user(username=username, password=password, email=email)
-    UserProfile.objects.create(
-        user=user,
-        role=UserProfile.Role.TECHNICIAN,
-        phone=phone,
-        address=address,
-    )
-
-    token, _ = Token.objects.get_or_create(user=user)
-
-    return Response({
-        'token':    token.key,
-        'username': user.username,
-        'email':    user.email,
-        'role':     UserProfile.Role.TECHNICIAN,
-    }, status=status.HTTP_201_CREATED)
-
+# ---------------------------------------------------------------------------
+# Authentication Views
+# ---------------------------------------------------------------------------
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout(request):
-    """Delete the user's token — effectively logging them out."""
+    """
+    Invalidate the requesting user's authentication token.
+
+    Deleting the token immediately revokes all API access for that session.
+    The client is responsible for discarding the token on their end.
+    """
     request.user.auth_token.delete()
     return Response({'message': 'Successfully logged out.'}, status=status.HTTP_200_OK)
 
@@ -428,9 +432,15 @@ def logout(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def me(request):
-    """Return the currently logged-in user's details and role."""
+    """
+    Return the authenticated user's identity and role.
+
+    Used by the frontend immediately after login to determine which
+    dashboard and navigation options to display.
+    """
     user    = request.user
     profile = getattr(user, 'profile', None)
+
     return Response({
         'id':       user.pk,
         'username': user.username,
@@ -439,9 +449,17 @@ def me(request):
     })
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Internal Helpers
+# ---------------------------------------------------------------------------
 
 def _get_client_ip(request):
+    """
+    Extract the originating IP address from the request.
+
+    Checks the X-Forwarded-For header first to handle requests routed
+    through a proxy or load balancer. Falls back to REMOTE_ADDR.
+    """
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
         return x_forwarded_for.split(',')[0].strip()

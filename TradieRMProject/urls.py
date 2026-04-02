@@ -1,48 +1,76 @@
 """
-URL configuration for TradieRMProject project.
+TradieRMProject/urls.py
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.0/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+Root URL configuration for the TradieRM backend.
+
+All API endpoints are prefixed with /api/.
+The DRF router handles standard resource URLs for all registered ViewSets.
+Non-resource endpoints (auth, webhook) are registered manually below the router.
+
+Endpoint summary:
+    /api/customers/             -- CustomerViewSet       (admin only)
+    /api/technicians/           -- TechnicianViewSet     (admin only)
+    /api/jobs/                  -- JobViewSet            (admin, customer)
+    /api/job-parts/             -- JobPartViewSet        (admin only)
+    /api/schedule/              -- ScheduleBlockViewSet  (admin, technician)
+    /api/invoices/              -- InvoiceViewSet        (admin only)
+    /api/client-requests/       -- ClientRequestViewSet  (admin only)
+    /api/ai-suggestions/        -- AIResponseSuggestionViewSet (admin, technician)
+
+    /api/auth/login/            -- Obtain auth token (POST, public)
+    /api/auth/logout/           -- Invalidate auth token (POST, authenticated)
+    /api/auth/me/               -- Current user identity and role (GET, authenticated)
+
+    /api/webhook/job-request/   -- Inbound job request from external website (POST, public)
+
+    /admin/                     -- Django admin panel
 """
+
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
+
 from tradiePrototype.views import (
-    CustomerViewSet, TechnicianViewSet,
-    JobViewSet, JobPartViewSet, ScheduleBlockViewSet,
-    InvoiceViewSet, ClientRequestViewSet,
-    AIResponseSuggestionViewSet, webhook_intake,
-    register_customer, register_technician, logout, me,
+    CustomerViewSet,
+    TechnicianViewSet,
+    JobViewSet,
+    JobPartViewSet,
+    ScheduleBlockViewSet,
+    InvoiceViewSet,
+    ClientRequestViewSet,
+    AIResponseSuggestionViewSet,
+    webhook_intake,
+    logout,
+    me,
 )
 
+# Register all ViewSets with the default router.
+# The router automatically generates list, detail, and action URLs for each.
 router = DefaultRouter()
-router.register(r'customers',        CustomerViewSet,             basename='customer')
-router.register(r'technicians',      TechnicianViewSet,           basename='technician')
-router.register(r'jobs',             JobViewSet,                  basename='job')
-router.register(r'job-parts',        JobPartViewSet,              basename='jobpart')
-router.register(r'schedule',         ScheduleBlockViewSet,        basename='schedule')
-router.register(r'invoices',         InvoiceViewSet,              basename='invoice')
-router.register(r'client-requests',  ClientRequestViewSet,        basename='clientrequest')
-router.register(r'ai-suggestions',   AIResponseSuggestionViewSet, basename='aisuggestion')
+router.register(r'customers',       CustomerViewSet,             basename='customer')
+router.register(r'technicians',     TechnicianViewSet,           basename='technician')
+router.register(r'jobs',            JobViewSet,                  basename='job')
+router.register(r'job-parts',       JobPartViewSet,              basename='jobpart')
+router.register(r'schedule',        ScheduleBlockViewSet,        basename='schedule')
+router.register(r'invoices',        InvoiceViewSet,              basename='invoice')
+router.register(r'client-requests', ClientRequestViewSet,        basename='clientrequest')
+router.register(r'ai-suggestions',  AIResponseSuggestionViewSet, basename='aisuggestion')
 
 urlpatterns = [
-    path('admin/',                        admin.site.urls),
-    path('api/',                          include(router.urls)),
-    path('api/auth/login/',               obtain_auth_token,   name='api-token-auth'),
-    path('api/auth/logout/',              logout,              name='api-logout'),
-    path('api/auth/register/customer/',   register_customer,   name='api-register-customer'),
-    path('api/auth/register/technician/', register_technician, name='api-register-technician'),
-    path('api/auth/me/',                  me,                  name='api-me'),
-    path('api/webhook/job-request/',      webhook_intake,      name='webhook-intake'),
+    # Django admin panel.
+    path('admin/', admin.site.urls),
+
+    # All router-generated API endpoints.
+    path('api/', include(router.urls)),
+
+    # Authentication endpoints.
+    # Login uses DRF's built-in token view. Logout and identity check are custom.
+    path('api/auth/login/',  obtain_auth_token, name='api-token-auth'),
+    path('api/auth/logout/', logout,            name='api-logout'),
+    path('api/auth/me/',     me,                name='api-me'),
+
+    # Webhook endpoint for inbound job requests from the external website.
+    # No authentication required -- validated by payload structure only.
+    path('api/webhook/job-request/', webhook_intake, name='webhook-intake'),
 ]

@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'tradiePrototype',
     'corsheaders',
+    'django_extensions',
 ]
 
 MIDDLEWARE = [
