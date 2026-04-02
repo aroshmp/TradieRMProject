@@ -158,3 +158,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:3001',
     'http://127.0.0.1:3001',
 ]
+
+ORS_API_KEY = 'your_openrouteservice_api_key'
+ADMIN_NOTIFICATION_EMAIL = 'doxdoxdox9@gmail.com'
+SITE_BASE_URL = 'http://localhost:3000'
