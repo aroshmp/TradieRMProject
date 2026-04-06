@@ -78,7 +78,6 @@ class CustomerViewSet(viewsets.ModelViewSet):
     creation flow described in UC2.
     """
 
-    queryset           = Customer.objects.all()
     serializer_class   = CustomerSerializer
     permission_classes = [IsAdministrator]
 
@@ -134,7 +133,39 @@ class CustomerViewSet(viewsets.ModelViewSet):
             'job':      JobSerializer(job).data,
         }, status=status.HTTP_201_CREATED)
 
+    def get_queryset(self):
+        """
+        UC5 -- Return only active customer records for standard list and detail operations.
+        Inactive records (soft-deleted via UC5) are retained in the database as a log
+        but excluded from all API responses.
+        """
+        return Customer.objects.filter(is_active=True)
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        UC5, Alternate Course Step 5b -- Soft-delete a customer record.
+
+        The record is NOT physically removed from the database. Instead, is_active
+        is set to False to mark the record as Inactive, preserving it as an audit log
+        per UC5 Step 5b.5. A Confirmed booking constraint does not apply to customers,
+        but the record is retained regardless of associated jobs or bookings.
+        """
+        customer = self.get_object()
+        customer.is_active = False
+        customer.save()
+
+        logger.info(
+            "Customer #%s (%s %s) marked as Inactive by administrator '%s'.",
+            customer.pk,
+            customer.first_name,
+            customer.last_name,
+            request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Customer record has been marked as Inactive.'},
+            status=status.HTTP_200_OK,
+        )
 # ---------------------------------------------------------------------------
 # Technician ViewSet
 # ---------------------------------------------------------------------------
