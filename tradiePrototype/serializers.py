@@ -148,15 +148,24 @@ class JobInventorySerializer(serializers.ModelSerializer):
 class JobSerializer(serializers.ModelSerializer):
     """
     Read serializer for Job records.
+
+    customer_detail and technician_detail provide nested objects for
+    display purposes. The writable customer and technician FK fields
+    remain as integers so JobCreateSerializer is unaffected.
+
     Includes nested job inventory for full detail views.
     """
 
-    job_inventory     = JobInventorySerializer(many=True, read_only=True)
-    is_completed      = serializers.ReadOnlyField()
+    # Nested read-only representations -- used by the frontend for display.
+    customer_detail = CustomerSerializer(source='customer', read_only=True)
+    technician_detail = TechnicianSerializer(source='technician', read_only=True)
+
+    job_inventory = JobInventorySerializer(many=True, read_only=True)
+    is_completed = serializers.ReadOnlyField()
     requires_feedback = serializers.ReadOnlyField()
 
     class Meta:
-        model  = Job
+        model = Job
         fields = '__all__'
 
 
