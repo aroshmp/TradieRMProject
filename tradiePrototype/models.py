@@ -25,12 +25,15 @@ class Customer(models.Model):
     """
     UC1, UC2 -- Stores customer contact details.
     Created either from a ClientRequest (UC1) or manually by the administrator (UC2).
+    Soft-delete is implemented via is_active (UC5). Setting is_active to False marks
+    the record as Inactive and excludes it from standard list queries.
     """
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
     email      = models.EmailField(unique=True)
     phone      = models.CharField(max_length=20, blank=True)
     address    = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)  # UC5 -- soft delete flag
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

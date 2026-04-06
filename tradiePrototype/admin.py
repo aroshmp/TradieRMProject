@@ -69,8 +69,9 @@ class AIResponseSuggestionInline(admin.TabularInline):
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'first_name', 'last_name', 'email', 'phone', 'created_at']
+    list_display  = ['id', 'first_name', 'last_name', 'email', 'phone', 'is_active', 'created_at']
     search_fields = ['first_name', 'last_name', 'email']
+    list_filter   = ['is_active']
     ordering      = ['last_name', 'first_name']
 
 
