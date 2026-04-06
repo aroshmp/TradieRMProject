@@ -569,6 +569,45 @@ class BookingViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject(self, request, pk=None):
+        """
+        UC6, Alternate Course Step 5b -- Reject a Pending booking.
+
+        Only a booking with a status of Pending can be rejected (UC6, Step 5b.3a.1).
+        On confirmation, the status is set to Rejected and the record is retained
+        as an audit log (UC6, Step 5b.5 and 5b.6).
+
+        Endpoint: POST /api/bookings/{id}/reject/
+        Access:   Administrator only.
+        """
+        booking = self.get_object()
+
+        if booking.status != Booking.Status.PENDING:
+            return Response(
+                {
+                    'error': (
+                        f"Booking is '{booking.status}', not Pending. "
+                        "Only a Pending booking can be rejected."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = Booking.Status.REJECTED
+        booking.save()
+
+        logger.info(
+            "Booking #%s rejected by administrator '%s'.",
+            booking.pk,
+            request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Booking record has been set to Rejected.'},
+            status=status.HTTP_200_OK,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Schedule Block ViewSet

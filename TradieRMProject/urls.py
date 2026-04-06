@@ -19,6 +19,7 @@ Endpoint summary:
         /api/jobs/{id}/update-status/           UC9 status update     (admin, technician)
         /api/bookings/                          BookingViewSet        (admin)
         /api/bookings/{id}/send-request/        UC4 email link        (admin)
+        /api/bookings/{id}/reject/              UC6 reject booking    (admin)
         /api/bookings/{id}/allocate/            UC7 allocate          (admin)
         /api/schedule/                          ScheduleBlockViewSet  (admin, technician)
         /api/invoices/                          InvoiceViewSet        (admin)
