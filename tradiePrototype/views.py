@@ -232,7 +232,47 @@ class TechnicianViewSet(viewsets.ModelViewSet):
 
         return Response(TechnicianSerializer(technician).data, status=status.HTTP_201_CREATED)
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        UC8, Alternate Course Step 5b -- Soft-delete a technician record.
 
+        The record is NOT physically removed from the database. Instead, is_active
+        is set to False to mark the record as Inactive, preserving it as an audit
+        log per UC8 Step 5b.5.
+
+        The associated Django User account is deactivated simultaneously to
+        immediately revoke login access without removing the account from the
+        audit trail.
+        """
+        technician = self.get_object()
+        technician.is_active = False
+        technician.save()
+
+        # Deactivate the linked Django User account to revoke login access.
+        try:
+            linked_user = User.objects.get(email=technician.email)
+            linked_user.is_active = False
+            linked_user.save()
+        except User.DoesNotExist:
+            logger.warning(
+                "No linked Django User found for Technician #%s (%s). "
+                "Technician marked Inactive without revoking a user account.",
+                technician.pk,
+                technician.email,
+            )
+
+        logger.info(
+            "Technician #%s (%s %s) marked as Inactive by administrator '%s'.",
+            technician.pk,
+            technician.first_name,
+            technician.last_name,
+            request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Technician record has been marked as Inactive.'},
+            status=status.HTTP_200_OK,
+        )
 # ---------------------------------------------------------------------------
 # Inventory ViewSet
 # ---------------------------------------------------------------------------
