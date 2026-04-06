@@ -539,6 +539,36 @@ class BookingViewSet(viewsets.ModelViewSet):
             'distance_km': distance_km,
         })
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        UC6, Alternate Course Step 5a -- Soft-delete a booking record.
+
+        A booking with a status of Confirmed cannot be deleted (UC6, Step 5a.3a.1).
+        For Pending bookings, the record is NOT physically removed. Instead, the
+        status is set to Inactive to preserve it as an audit log (UC6, Step 5a.5).
+        """
+        booking = self.get_object()
+
+        if booking.status == Booking.Status.CONFIRMED:
+            return Response(
+                {'error': 'A Confirmed booking cannot be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = Booking.Status.INACTIVE
+        booking.save()
+
+        logger.info(
+            "Booking #%s marked as Inactive by administrator '%s'.",
+            booking.pk,
+            request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Booking record has been marked as Inactive.'},
+            status=status.HTTP_200_OK,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Schedule Block ViewSet

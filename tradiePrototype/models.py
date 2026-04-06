@@ -226,6 +226,7 @@ class Booking(models.Model):
         PENDING   = 'pending',   'Pending'
         CONFIRMED = 'confirmed', 'Confirmed'
         REJECTED  = 'rejected',  'Rejected'
+        INACTIVE = 'inactive', 'Inactive'  # UC6 -- soft delete via administrator action
 
     job      = models.ForeignKey(Job, on_delete=models.CASCADE, related_name='bookings')
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='bookings')
