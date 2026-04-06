@@ -894,6 +894,13 @@ def webhook_intake(request):
     """
     serializer = WebhookInboundSerializer(data=request.data)
     if not serializer.is_valid():
+        # UC1, Alternate Course Step 3a.3 -- if a valid email address was
+        # present in the payload, send the company contact details to the
+        # client so they can follow up through another channel.
+        partial_email = request.data.get('email', '').strip()
+        if partial_email:
+            _send_contact_details_email_on_failed_request(partial_email)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     data = serializer.validated_data
@@ -929,6 +936,47 @@ def webhook_intake(request):
         'message':    'Request received. A confirmation has been sent to your email.',
         'request_id': client_request.pk,
     }, status=status.HTTP_201_CREATED)
+
+def _send_contact_details_email_on_failed_request(email: str):
+    """
+    UC1, Alternate Course Step 3a.3 -- Send the company's contact details to the
+    client when their webhook submission fails validation.
+
+    Only sent if a valid email address was present in the partial payload.
+    Requires COMPANY_CONTACT_PHONE and COMPANY_CONTACT_EMAIL to be set in
+    Django settings. Falls back to placeholder text if not configured.
+    """
+    company_phone = getattr(django_settings, 'COMPANY_CONTACT_PHONE', 'our office number')
+    company_email = getattr(django_settings, 'COMPANY_CONTACT_EMAIL', 'info@tradierm.com')
+
+    subject = "We received your enquiry -- please contact us directly"
+    message = (
+        f"Thank you for reaching out.\n\n"
+        f"Unfortunately we were unable to process your submission because one or more "
+        f"required fields were missing.\n\n"
+        f"Please contact us directly using the details below and we will be happy to assist:\n\n"
+        f"  Phone : {company_phone}\n"
+        f"  Email : {company_email}\n\n"
+        f"Kind regards,\n"
+        f"The TradieRM Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list=[email],
+            fail_silently=False,
+        )
+        logger.info(
+            "Contact details email sent to '%s' following failed webhook submission.",
+            email,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to send contact details email to '%s': %s",
+            email, exc,
+        )
 
 
 # ---------------------------------------------------------------------------

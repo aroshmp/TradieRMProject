@@ -162,3 +162,7 @@ CORS_ALLOWED_ORIGINS = [
 ORS_API_KEY = 'your_openrouteservice_api_key'
 ADMIN_NOTIFICATION_EMAIL = 'doxdoxdox9@gmail.com'
 SITE_BASE_URL = 'http://localhost:3000'
+
+# Company contact details sent to clients when webhook validation fails (UC1, Step 3a.3).
+COMPANY_CONTACT_PHONE = '+61 3 9000 0000'
+COMPANY_CONTACT_EMAIL = 'info@tradierm.com'
