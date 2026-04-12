@@ -9,32 +9,75 @@ Non-resource endpoints (auth, webhook, UC4 token submission) are registered manu
 
 Endpoint summary:
 
-    Resource endpoints (router-generated):
-        /api/customers/                         CustomerViewSet       (admin)
-        /api/customers/create-with-job/         UC2 combined create   (admin)
-        /api/technicians/                       TechnicianViewSet     (admin)
-        /api/inventory/                         InventoryViewSet      (admin)
-        /api/job-inventory/                     JobInventoryViewSet   (admin)
-        /api/jobs/                              JobViewSet            (admin, technician, customer)
-        /api/jobs/{id}/update-status/           UC9 status update     (admin, technician)
-        /api/bookings/                          BookingViewSet        (admin)
-        /api/bookings/{id}/send-request/        UC4 email link        (admin)
-        /api/bookings/{id}/reject/              UC6 reject booking    (admin)
-        /api/bookings/{id}/allocate/            UC7 allocate          (admin)
-        /api/schedule/                          ScheduleBlockViewSet  (admin, technician)
-        /api/invoices/                          InvoiceViewSet        (admin)
-        /api/client-requests/                   ClientRequestViewSet  (admin)
-        /api/client-requests/{id}/process/      UC1 process request   (admin)
-        /api/ai-suggestions/                    AIResponseSuggestionViewSet (admin, technician)
+    Customer endpoints:
+        /api/customers/                         CustomerViewSet.list / create
+        /api/customers/{id}/                    CustomerViewSet.retrieve / update / destroy
+        /api/customers/create-with-job/         UC2 -- combined customer + job create
+
+    Technician endpoints:
+        /api/technicians/                       TechnicianViewSet.list / create
+        /api/technicians/{id}/                  TechnicianViewSet.retrieve / update / destroy
+
+    Inventory endpoints:
+        /api/inventory/                         InventoryViewSet.list / create
+        /api/inventory/{id}/                    InventoryViewSet.retrieve / update / destroy
+
+    Job Inventory endpoints:
+        /api/job-inventory/                     JobInventoryViewSet.list / create
+        /api/job-inventory/{id}/                JobInventoryViewSet.retrieve / update / destroy
+
+    Job endpoints:
+        /api/jobs/                              JobViewSet.list / create
+        /api/jobs/{id}/                         JobViewSet.retrieve / update / destroy
+        /api/jobs/{id}/update-status/           UC16, UC23, UC24 -- status transition
+
+    Booking endpoints:
+        /api/bookings/                          BookingViewSet.list / create
+        /api/bookings/{id}/                     BookingViewSet.retrieve / update / destroy
+        /api/bookings/{id}/send-request/        UC4  -- email customer booking link
+        /api/bookings/{id}/reject/              UC10 -- reject a pending booking
+        /api/bookings/{id}/allocate/            UC15 -- allocate technician to booking
+
+    Schedule Block endpoints (raw blocks):
+        /api/schedule/                          ScheduleBlockViewSet.list
+        /api/schedule/{id}/                     ScheduleBlockViewSet.retrieve
+
+    Technician Schedule endpoints:
+        /api/technician-schedule/               UC26 -- list all technicians (admin)
+        /api/technician-schedule/{id}/          UC26 -- schedule for one technician (admin)
+        /api/technician-schedule/mine/          UC27 -- own schedule (technician)
+
+    Invoice endpoints:
+        /api/invoices/                          InvoiceViewSet.list
+        /api/invoices/{id}/                     InvoiceViewSet.retrieve / update
+        /api/invoices/{id}/recalculate/         UC25 -- recalculate cost fields (admin)
+        /api/invoices/{id}/approve/             UC25 -- approve, generate PDF, send email
+
+    Notification endpoints:
+        /api/notifications/                     NotificationViewSet.list (admin, unread first)
+        /api/notifications/{id}/                NotificationViewSet.retrieve
+        /api/notifications/{id}/mark-read/      Mark one notification as read
+        /api/notifications/mark-all-read/       Mark all unread notifications as read
+
+    Client Request endpoints:
+        /api/client-requests/                   ClientRequestViewSet.list
+        /api/client-requests/{id}/              ClientRequestViewSet.retrieve
+        /api/client-requests/{id}/process/      UC1 -- convert request to customer + job
+
+    AI Suggestion endpoints (descoped, retained for audit):
+        /api/ai-suggestions/                    AIResponseSuggestionViewSet.list
+        /api/ai-suggestions/{id}/               AIResponseSuggestionViewSet.retrieve
+        /api/ai-suggestions/{id}/approve/       BR5 -- approve suggestion
+        /api/ai-suggestions/{id}/reject/        BR5 -- reject suggestion
 
     Authentication endpoints:
-        /api/auth/login/                        Obtain token          (public)
-        /api/auth/logout/                       Invalidate token      (authenticated)
+        /api/auth/login/                        Obtain token (public)
+        /api/auth/logout/                       Invalidate token (authenticated)
         /api/auth/me/                           Current user identity (authenticated)
 
     Webhook and public endpoints:
-        /api/webhook/job-request/               UC8 inbound webhook   (public)
-        /api/booking/submit/                    UC4 token form submit (public)
+        /api/webhook/job-request/               UC1 -- inbound webhook (public)
+        /api/booking/submit/                    UC4 -- customer booking form submit (public)
 
     Django admin:
         /admin/
@@ -53,7 +96,9 @@ from tradiePrototype.views import (
     JobViewSet,
     BookingViewSet,
     ScheduleBlockViewSet,
+    TechnicianScheduleViewSet,
     InvoiceViewSet,
+    NotificationViewSet,
     ClientRequestViewSet,
     AIResponseSuggestionViewSet,
     webhook_intake,
@@ -62,18 +107,38 @@ from tradiePrototype.views import (
     me,
 )
 
-# Register all ViewSets with the DRF router.
+# ---------------------------------------------------------------------------
+# Router registration
+# ---------------------------------------------------------------------------
+
 router = DefaultRouter()
-router.register(r'customers',       CustomerViewSet,             basename='customer')
-router.register(r'technicians',     TechnicianViewSet,           basename='technician')
-router.register(r'inventory',       InventoryViewSet,            basename='inventory')
-router.register(r'job-inventory',   JobInventoryViewSet,         basename='jobinventory')
-router.register(r'jobs',            JobViewSet,                  basename='job')
-router.register(r'bookings',        BookingViewSet,              basename='booking')
-router.register(r'schedule',        ScheduleBlockViewSet,        basename='schedule')
-router.register(r'invoices',        InvoiceViewSet,              basename='invoice')
+
+# Core resource ViewSets.
+router.register(r'customers',       CustomerViewSet,       basename='customer')
+router.register(r'technicians',     TechnicianViewSet,     basename='technician')
+router.register(r'inventory',       InventoryViewSet,      basename='inventory')
+router.register(r'job-inventory',   JobInventoryViewSet,   basename='jobinventory')
+router.register(r'jobs',            JobViewSet,            basename='job')
+router.register(r'bookings',        BookingViewSet,        basename='booking')
+
+# Schedule ViewSets.
+# ScheduleBlockViewSet: raw time blocks (existing, retained for compatibility).
+# TechnicianScheduleViewSet: structured UC26/UC27 schedule responses.
+router.register(r'schedule',             ScheduleBlockViewSet,       basename='schedule')
+router.register(r'technician-schedule',  TechnicianScheduleViewSet,  basename='technician-schedule')
+
+# Invoice and notification ViewSets.
+router.register(r'invoices',       InvoiceViewSet,       basename='invoice')
+router.register(r'notifications',  NotificationViewSet,  basename='notification')
+
+# Client request and AI suggestion ViewSets.
 router.register(r'client-requests', ClientRequestViewSet,        basename='clientrequest')
 router.register(r'ai-suggestions',  AIResponseSuggestionViewSet, basename='aisuggestion')
+
+
+# ---------------------------------------------------------------------------
+# URL patterns
+# ---------------------------------------------------------------------------
 
 urlpatterns = [
     # Django admin panel.
@@ -87,7 +152,7 @@ urlpatterns = [
     path('api/auth/logout/', logout,            name='api-logout'),
     path('api/auth/me/',     me,                name='api-me'),
 
-    # UC8 -- Inbound job request from the external website. No authentication required.
+    # UC1 -- Inbound job request from the external website. No authentication required.
     path('api/webhook/job-request/', webhook_intake, name='webhook-intake'),
 
     # UC4 -- Customer booking form submission via signed token link. No authentication required.

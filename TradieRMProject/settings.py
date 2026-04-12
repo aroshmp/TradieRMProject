@@ -166,3 +166,6 @@ SITE_BASE_URL = 'http://localhost:3000'
 # Company contact details sent to clients when webhook validation fails (UC1, Step 3a.3).
 COMPANY_CONTACT_PHONE = '+61 3 9000 0000'
 COMPANY_CONTACT_EMAIL = 'info@tradierm.com'
+
+INVOICE_SERVICE_CHARGE_PERCENTAGE = 10.00
+INVOICE_DISTANCE_RATE             = 1.50
