@@ -3,8 +3,13 @@ tradiePrototype/admin.py
 
 Django admin registrations for all TradieRM models.
 
-Provides list views, search, filtering, and inline editing
-for all models managed through the Django admin panel.
+Provides list views, search, filtering, and inline editing for all models
+managed through the Django admin panel.
+
+Registration order mirrors the model dependency graph:
+    Customer, Technician, Job, Inventory, JobInventory, Booking,
+    ScheduleBlock, Invoice, Notification, ClientRequest,
+    AIResponseSuggestion, UserProfile.
 """
 
 from django.contrib import admin
@@ -18,6 +23,7 @@ from .models import (
     Booking,
     ScheduleBlock,
     Invoice,
+    Notification,
     ClientRequest,
     AIResponseSuggestion,
     UserProfile,
@@ -31,7 +37,7 @@ from .models import (
 class JobInventoryInline(admin.TabularInline):
     """
     Displays inventory items assigned to a job directly on the Job admin page.
-    line_total is read-only as it is a computed property.
+    line_total is a computed property on the model and must be read-only.
     """
 
     model           = JobInventory
@@ -43,6 +49,7 @@ class JobInventoryInline(admin.TabularInline):
 class BookingInline(admin.TabularInline):
     """
     Displays bookings linked to a job directly on the Job admin page.
+    distance is populated automatically during allocation and must be read-only.
     """
 
     model           = Booking
@@ -54,7 +61,7 @@ class BookingInline(admin.TabularInline):
 class AIResponseSuggestionInline(admin.TabularInline):
     """
     Displays AI suggestions linked to a client request on the ClientRequest admin page.
-    Status and review timestamps are read-only as they are managed by the view layer.
+    Status and review timestamps are managed by the view layer and must be read-only.
     """
 
     model           = AIResponseSuggestion
@@ -69,10 +76,16 @@ class AIResponseSuggestionInline(admin.TabularInline):
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'first_name', 'last_name', 'email', 'phone', 'is_active', 'created_at']
-    search_fields = ['first_name', 'last_name', 'email']
-    list_filter   = ['is_active']
-    ordering      = ['last_name', 'first_name']
+    """
+    UC2, UC6 -- Customer records.
+    is_active reflects soft-delete state set by UC6 (Delete Customer).
+    """
+
+    list_display    = ['id', 'first_name', 'last_name', 'email', 'phone', 'is_active', 'created_at']
+    search_fields   = ['first_name', 'last_name', 'email']
+    list_filter     = ['is_active']
+    ordering        = ['last_name', 'first_name']
+    readonly_fields = ['created_at', 'updated_at']
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +94,16 @@ class CustomerAdmin(admin.ModelAdmin):
 
 @admin.register(Technician)
 class TechnicianAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'first_name', 'last_name', 'email', 'phone', 'skill', 'is_active']
-    search_fields = ['first_name', 'last_name', 'email']
-    list_filter   = ['is_active', 'gender']
-    ordering      = ['last_name', 'first_name']
+    """
+    UC11, UC13 -- Technician records.
+    is_active reflects soft-delete state set by UC13 (Delete Technician).
+    """
+
+    list_display    = ['id', 'first_name', 'last_name', 'email', 'phone', 'skill', 'hourly_rate', 'is_active']
+    search_fields   = ['first_name', 'last_name', 'email']
+    list_filter     = ['is_active', 'gender']
+    ordering        = ['last_name', 'first_name']
+    readonly_fields = ['created_at', 'updated_at']
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +112,18 @@ class TechnicianAdmin(admin.ModelAdmin):
 
 @admin.register(Job)
 class JobAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'subject', 'customer', 'technician', 'status', 'source', 'created_at']
-    list_filter   = ['status', 'source']
-    search_fields = ['subject', 'customer__last_name', 'technician__last_name']
-    ordering      = ['-created_at']
-    inlines       = [JobInventoryInline, BookingInline]
-    readonly_fields = ['created_at', 'updated_at']
+    """
+    UC2, UC16, UC17, UC23, UC24 -- Job records.
+    start_time and end_time are set automatically by the view layer (UC23, UC24)
+    and are read-only here to prevent manual corruption of invoice calculations.
+    """
+
+    list_display    = ['id', 'subject', 'customer', 'technician', 'status', 'source', 'start_time', 'end_time', 'created_at']
+    list_filter     = ['status', 'source']
+    search_fields   = ['subject', 'customer__last_name', 'technician__last_name']
+    ordering        = ['-created_at']
+    readonly_fields = ['start_time', 'end_time', 'created_at', 'updated_at']
+    inlines         = [JobInventoryInline, BookingInline]
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +132,15 @@ class JobAdmin(admin.ModelAdmin):
 
 @admin.register(Inventory)
 class InventoryAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'name', 'quantity', 'cost', 'status', 'created_at']
-    search_fields = ['name']
-    list_filter   = ['status']
-    ordering      = ['name']
+    """
+    UC18, UC19, UC20 -- Inventory (spare parts and materials) records.
+    status is derived automatically from quantity on save and must be read-only.
+    """
+
+    list_display    = ['id', 'name', 'quantity', 'cost', 'status', 'created_at']
+    search_fields   = ['name']
+    list_filter     = ['status']
+    ordering        = ['name']
     readonly_fields = ['status', 'created_at', 'updated_at']
 
 
@@ -120,8 +150,13 @@ class InventoryAdmin(admin.ModelAdmin):
 
 @admin.register(JobInventory)
 class JobInventoryAdmin(admin.ModelAdmin):
-    list_display  = ['id', 'job', 'inventory', 'quantity_used', 'line_total']
-    search_fields = ['inventory__name', 'job__subject']
+    """
+    UC21, UC22 -- Parts assigned to a job.
+    line_total is a computed property on the model and must be read-only.
+    """
+
+    list_display    = ['id', 'job', 'inventory', 'quantity_used', 'line_total']
+    search_fields   = ['inventory__name', 'job__subject']
     readonly_fields = ['line_total']
 
 
@@ -131,6 +166,12 @@ class JobInventoryAdmin(admin.ModelAdmin):
 
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
+    """
+    UC3, UC4, UC8, UC9, UC10, UC15 -- Booking (scheduling) records.
+    distance is calculated via OpenRouteService during allocation and must be read-only.
+    booking_token and token_expires_at are managed by the view layer (UC4).
+    """
+
     list_display    = ['id', 'job', 'customer', 'technician', 'date', 'time', 'status', 'distance']
     list_filter     = ['status']
     search_fields   = ['customer__last_name', 'job__subject', 'physical_address']
@@ -144,6 +185,10 @@ class BookingAdmin(admin.ModelAdmin):
 
 @admin.register(ScheduleBlock)
 class ScheduleBlockAdmin(admin.ModelAdmin):
+    """
+    UC26, UC27 -- Technician calendar time blocks (job and travel).
+    """
+
     list_display = ['id', 'technician', 'block_type', 'start_time', 'end_time', 'job']
     list_filter  = ['block_type', 'technician']
     ordering     = ['technician', 'start_time']
@@ -155,18 +200,52 @@ class ScheduleBlockAdmin(admin.ModelAdmin):
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
+    """
+    UC24, UC25 -- Invoice records.
+
+    All derived cost fields are read-only because they are calculated by
+    Invoice.calculate_totals() and must not be edited directly.
+
+    Editable fields (set by the administrator during UC25 review):
+        hours_taken, distance_rate, service_charge_percentage, notes.
+
+    Read-only derived fields:
+        labour_cost, distance_cost, parts_cost, subtotal,
+        service_charge, total_cost, date_generated, updated_at.
+    """
+
     list_display    = [
         'id', 'job', 'technician', 'status',
         'hours_taken', 'labour_cost', 'distance_cost',
-        'parts_cost', 'total_cost', 'date_generated',
+        'parts_cost', 'service_charge', 'total_cost', 'date_generated',
     ]
     list_filter     = ['status']
     ordering        = ['-date_generated']
     readonly_fields = [
         'labour_cost', 'distance_cost', 'parts_cost',
-        'subtotal', 'markup', 'total_cost',
+        'subtotal', 'service_charge', 'total_cost',
         'date_generated', 'updated_at',
     ]
+
+
+# ---------------------------------------------------------------------------
+# Notification
+# ---------------------------------------------------------------------------
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    """
+    UC24, step 10 -- In-system administrator notifications.
+
+    Created automatically when a technician completes a job.
+    read_at is set by the mark_as_read() model method and must be read-only.
+    """
+
+    list_display    = ['id', 'recipient', 'notification_type', 'job', 'invoice', 'is_read', 'created_at']
+    list_filter     = ['is_read', 'notification_type']
+    search_fields   = ['recipient__username', 'message']
+    ordering        = ['-created_at']
+    readonly_fields = ['read_at', 'created_at']
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +254,11 @@ class InvoiceAdmin(admin.ModelAdmin):
 
 @admin.register(ClientRequest)
 class ClientRequestAdmin(admin.ModelAdmin):
+    """
+    UC1 -- Inbound job requests received via the public webhook endpoint.
+    acknowledged_at, raw_payload, and source_ip are set by the view layer.
+    """
+
     list_display    = ['id', 'contact_name', 'contact_email', 'status', 'acknowledged_at', 'created_at']
     list_filter     = ['status']
     search_fields   = ['contact_name', 'contact_email', 'subject']
@@ -189,6 +273,11 @@ class ClientRequestAdmin(admin.ModelAdmin):
 
 @admin.register(AIResponseSuggestion)
 class AIResponseSuggestionAdmin(admin.ModelAdmin):
+    """
+    BR4, BR5 -- AI-generated response suggestions (formally descoped).
+    Retained for audit purposes. All timestamp fields are read-only.
+    """
+
     list_display    = ['id', 'client_request', 'approval_status', 'reviewed_by_role', 'reviewed_at', 'sent_at']
     list_filter     = ['approval_status', 'reviewed_by_role']
     ordering        = ['-created_at']
@@ -201,6 +290,10 @@ class AIResponseSuggestionAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
+    """
+    RBAC -- Role assignments for all system users.
+    """
+
     list_display  = ['user', 'role', 'phone']
     list_filter   = ['role']
     search_fields = ['user__username', 'user__email']
