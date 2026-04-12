@@ -34,7 +34,6 @@ Role access summary:
 import io
 import logging
 from datetime import timedelta
-from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.mail import EmailMessage, send_mail
@@ -325,11 +324,28 @@ class JobInventoryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdministrator | IsTechnician]
 
     def get_queryset(self):
-        """Filter by job ID if the 'job' query parameter is provided."""
-        job_id = self.request.query_params.get('job')
+        """
+        Return JobInventory records scoped by role and optional job filter.
+
+        Administrators receive all records.
+        Technicians receive only records for jobs assigned to them (UC22 --
+        a technician must not view or modify parts on another technician's job).
+
+        The ?job=<id> query parameter narrows results further for both roles.
+        """
+        user    = self.request.user
+        profile = getattr(user, 'profile', None)
+
         qs = JobInventory.objects.select_related('job', 'inventory')
+
+        if profile and profile.is_technician:
+            # Restrict technicians to jobs assigned to them only.
+            qs = qs.filter(job__technician__email=user.email)
+
+        job_id = self.request.query_params.get('job')
         if job_id:
             qs = qs.filter(job_id=job_id)
+
         return qs
 
     def create(self, request, *args, **kwargs):
