@@ -8,23 +8,36 @@ Use case coverage:
     UC2  -- CustomerViewSet.create_with_job action
     UC3  -- BookingViewSet.create (admin-triggered)
     UC4  -- BookingViewSet.send_request action + booking_token_submit view
-    UC5  -- InventoryViewSet
-    UC6  -- TechnicianViewSet.create (provisions User + sends email)
-    UC7  -- BookingViewSet.allocate action (distance calc + emails)
-    UC8  -- webhook_intake view
-    UC9  -- JobViewSet.update_status action
+    UC6  -- CustomerViewSet.destroy (soft delete)
+    UC8  -- BookingViewSet.destroy (soft delete)
+    UC10 -- BookingViewSet.reject action
+    UC11 -- TechnicianViewSet.create (provisions User + sends email)
+    UC13 -- TechnicianViewSet.destroy (soft delete)
+    UC15 -- BookingViewSet.allocate action (distance calc + emails)
+    UC16 -- JobViewSet.update_status action (admin status transitions)
+    UC18 -- InventoryViewSet
+    UC21 -- JobInventoryViewSet (admin-triggered part assignment)
+    UC22 -- JobInventoryViewSet (technician-triggered part assignment)
+    UC23 -- JobViewSet.update_status -> In Progress (records start_time)
+    UC24 -- JobViewSet.update_status -> Completed (records end_time, creates invoice)
+    UC25 -- InvoiceViewSet.recalculate + InvoiceViewSet.approve (PDF + email)
+    UC26 -- TechnicianScheduleViewSet (admin-triggered)
+    UC27 -- TechnicianScheduleViewSet (technician-triggered, own schedule)
+    UC1  -- webhook_intake view (inbound API payload)
 
 Role access summary:
-    Administrator  -- full access to all resources and all actions
-    Technician     -- own schedule, own jobs, job status update, AI suggestions
-    Customer       -- read own jobs; booking form submission via token (UC4)
+    Administrator -- full access to all resources and all actions
+    Technician    -- own schedule, own jobs, job status update, part assignment
+    Customer      -- read own jobs; booking form submission via token (UC4)
 """
 
+import io
 import logging
 from datetime import timedelta
+from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage, send_mail
 from django.core import signing
 from django.conf import settings as django_settings
 from django.utils import timezone
@@ -36,32 +49,50 @@ from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 
 from .models import (
-    Customer, Technician, Job, Inventory, JobInventory,
-    Booking, ScheduleBlock, Invoice,
-    ClientRequest, AIResponseSuggestion, UserProfile,
+    Booking,
+    Customer,
+    Technician,
+    Job,
+    Inventory,
+    JobInventory,
+    ScheduleBlock,
+    Invoice,
+    Notification,
+    ClientRequest,
+    AIResponseSuggestion,
+    UserProfile,
 )
 from .serializers import (
     CustomerSerializer,
-    TechnicianSerializer, TechnicianCreateSerializer,
+    TechnicianSerializer,
+    TechnicianCreateSerializer,
     InventorySerializer,
     JobInventorySerializer,
-    JobSerializer, JobCreateSerializer, JobStatusUpdateSerializer,
-    BookingSerializer, BookingCreateSerializer, BookingTokenSubmitSerializer,
+    JobSerializer,
+    JobCreateSerializer,
+    JobStatusUpdateSerializer,
+    BookingSerializer,
+    BookingCreateSerializer,
+    BookingTokenSubmitSerializer,
     ScheduleBlockSerializer,
+    TechnicianScheduleEntrySerializer,
     InvoiceSerializer,
-    ClientRequestSerializer, ClientRequestProcessSerializer,
+    InvoiceRecalculateSerializer,
+    InvoiceApproveSerializer,
+    NotificationSerializer,
+    ClientRequestSerializer,
+    ClientRequestProcessSerializer,
     WebhookInboundSerializer,
-    AIResponseSuggestionSerializer, ApproveResponseSerializer,
+    AIResponseSuggestionSerializer,
+    ApproveResponseSerializer,
 )
 from .services.distance_service import get_road_distance_km
 from .services.invoice_generator import generate_invoice
-from .services.confirmation import send_confirmation
-from .services.ai_responder import generate_ai_suggestion
 from .permissions import IsAdministrator, IsTechnician, IsCustomer, IsAdminOrTechnician
 
 logger = logging.getLogger(__name__)
 
-# Token expiry window for the customer-facing booking form link (UC4).
+# Expiry window (hours) for the customer-facing booking form token (UC4).
 BOOKING_TOKEN_EXPIRY_HOURS = 48
 
 
@@ -71,29 +102,57 @@ BOOKING_TOKEN_EXPIRY_HOURS = 48
 
 class CustomerViewSet(viewsets.ModelViewSet):
     """
-    UC2 -- Full CRUD for Customer records.
+    UC2, UC5, UC6, UC7 -- Full CRUD for Customer records.
 
     Access: Administrator only.
-    The create_with_job action handles the combined customer + job
-    creation flow described in UC2.
+    Soft-delete via UC6 sets is_active=False; record is retained as audit log.
+    The create_with_job action handles the combined create flow (UC2).
     """
 
     serializer_class   = CustomerSerializer
     permission_classes = [IsAdministrator]
 
+    def get_queryset(self):
+        """
+        Return only active customers for standard list and detail operations.
+        Inactive records are excluded from API responses but retained in the DB.
+        """
+        return Customer.objects.filter(is_active=True)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        UC6 -- Soft-delete a customer record by setting is_active to False.
+
+        The record is not removed from the database; it is retained as an
+        audit log per UC6, step 8.
+        """
+        customer = self.get_object()
+        customer.is_active = False
+        customer.save()
+
+        logger.info(
+            "Customer #%s (%s %s) marked as Inactive by administrator '%s'.",
+            customer.pk, customer.first_name, customer.last_name,
+            request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Customer record has been marked as Inactive.'},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=['post'], url_path='create-with-job')
     def create_with_job(self, request):
         """
-        UC2 -- Create a customer record and a job record in a single request.
+        UC2 -- Create a Customer record and a Job record in a single request.
 
         Expected payload:
             first_name, last_name, phone, email  -- customer fields
             subject, client_message              -- job fields
 
-        Both records are created together. If either validation fails,
+        Both records are created atomically. If either validation fails,
         neither record is persisted.
         """
-        # Validate customer fields using the customer serializer.
         customer_data = {
             'first_name': request.data.get('first_name', '').strip(),
             'last_name':  request.data.get('last_name',  '').strip(),
@@ -104,7 +163,6 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if not customer_serializer.is_valid():
             return Response(customer_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate job fields manually before persisting either record.
         subject        = request.data.get('subject', '').strip()
         client_message = request.data.get('client_message', '').strip()
 
@@ -116,10 +174,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Persist the customer record (UC2, step 7).
         customer = customer_serializer.save()
-
-        # Persist the job record with status Pending (UC2, step 8).
         job = Job.objects.create(
             customer=customer,
             subject=subject,
@@ -128,127 +183,84 @@ class CustomerViewSet(viewsets.ModelViewSet):
             source=Job.Source.MANUAL,
         )
 
-        return Response({
-            'customer': CustomerSerializer(customer).data,
-            'job':      JobSerializer(job).data,
-        }, status=status.HTTP_201_CREATED)
-
-    def get_queryset(self):
-        """
-        UC5 -- Return only active customer records for standard list and detail operations.
-        Inactive records (soft-deleted via UC5) are retained in the database as a log
-        but excluded from all API responses.
-        """
-        return Customer.objects.filter(is_active=True)
-
-    def destroy(self, request, *args, **kwargs):
-        """
-        UC5, Alternate Course Step 5b -- Soft-delete a customer record.
-
-        The record is NOT physically removed from the database. Instead, is_active
-        is set to False to mark the record as Inactive, preserving it as an audit log
-        per UC5 Step 5b.5. A Confirmed booking constraint does not apply to customers,
-        but the record is retained regardless of associated jobs or bookings.
-        """
-        customer = self.get_object()
-        customer.is_active = False
-        customer.save()
-
-        logger.info(
-            "Customer #%s (%s %s) marked as Inactive by administrator '%s'.",
-            customer.pk,
-            customer.first_name,
-            customer.last_name,
-            request.user.username,
-        )
-
         return Response(
-            {'detail': 'Customer record has been marked as Inactive.'},
-            status=status.HTTP_200_OK,
+            {'customer': CustomerSerializer(customer).data, 'job': JobSerializer(job).data},
+            status=status.HTTP_201_CREATED,
         )
+
+
 # ---------------------------------------------------------------------------
 # Technician ViewSet
 # ---------------------------------------------------------------------------
 
 class TechnicianViewSet(viewsets.ModelViewSet):
     """
-    UC6 -- Full CRUD for Technician records.
+    UC11, UC12, UC13, UC14 -- Full CRUD for Technician records.
 
     Access: Administrator only.
-    The create action provisions a Django User login account with a
-    temporary password equal to the technician's phone number,
-    and sends a confirmation email to the technician.
+    On create (UC11), a Django User login account is provisioned and a
+    welcome email is dispatched. Soft-delete via UC13 sets is_active=False
+    and deactivates the linked User account.
     """
 
     queryset           = Technician.objects.filter(is_active=True)
     permission_classes = [IsAdministrator]
 
     def get_serializer_class(self):
-        """Use the creation serializer for POST; the read serializer for all other actions."""
+        """Use the creation serializer for POST; the read serializer otherwise."""
         if self.action == 'create':
             return TechnicianCreateSerializer
         return TechnicianSerializer
 
     def create(self, request, *args, **kwargs):
         """
-        UC6 -- Create a technician record and provision their login account.
+        UC11 -- Create a Technician record and provision their Django User account.
 
         Steps:
-            1. Validate all technician profile fields and the username.
+            1. Validate all profile fields and the username.
             2. Create the Technician record.
-            3. Create a Django User with the supplied username and a
-               temporary password set to the technician's phone number (UC6, step 8).
-            4. Create a UserProfile linking the User to the Technician role.
-            5. Create an authentication token for the new user.
-            6. Send a confirmation email with login details (UC6, step 9).
+            3. Create a Django User with a temporary password = phone number.
+            4. Create a UserProfile assigning the Technician role.
+            5. Create an auth token for the new user.
+            6. Send a welcome email with login credentials (UC11, step 9).
         """
         serializer = TechnicianCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        validated = serializer.validated_data
-        username  = validated.pop('username')
-        phone     = validated.get('phone', '')
+        username = serializer.validated_data.pop('username')
+        technician = serializer.save()
 
-        # Create the technician profile record (UC6, step 7).
-        technician = Technician.objects.create(**validated)
-
-        # Temporary password is set to the technician's phone number (UC6, step 8).
-        # A fallback is provided in case phone is blank.
-        temp_password = phone if phone else 'ChangeMe123!'
-
+        temp_password = technician.phone or 'changeme123'
         user = User.objects.create_user(
             username=username,
-            password=temp_password,
             email=technician.email,
-            first_name=technician.first_name,
-            last_name=technician.last_name,
+            password=temp_password,
         )
         UserProfile.objects.create(user=user, role=UserProfile.Role.TECHNICIAN)
-        Token.objects.get_or_create(user=user)
+        Token.objects.create(user=user)
 
-        # Send the confirmation email (UC6, step 9).
         _send_technician_welcome_email(technician, username, temp_password)
+
+        logger.info(
+            "Technician #%s (%s %s) created with username '%s' by administrator '%s'.",
+            technician.pk, technician.first_name, technician.last_name,
+            username, request.user.username,
+        )
 
         return Response(TechnicianSerializer(technician).data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):
         """
-        UC8, Alternate Course Step 5b -- Soft-delete a technician record.
+        UC13 -- Soft-delete a Technician record by setting is_active to False.
 
-        The record is NOT physically removed from the database. Instead, is_active
-        is set to False to mark the record as Inactive, preserving it as an audit
-        log per UC8 Step 5b.5.
-
-        The associated Django User account is deactivated simultaneously to
-        immediately revoke login access without removing the account from the
-        audit trail.
+        Also deactivates the linked Django User account to revoke login access.
+        The record is retained as an audit log (UC13, step 9).
         """
         technician = self.get_object()
         technician.is_active = False
         technician.save()
 
-        # Deactivate the linked Django User account to revoke login access.
         try:
             linked_user = User.objects.get(email=technician.email)
             linked_user.is_active = False
@@ -257,15 +269,12 @@ class TechnicianViewSet(viewsets.ModelViewSet):
             logger.warning(
                 "No linked Django User found for Technician #%s (%s). "
                 "Technician marked Inactive without revoking a user account.",
-                technician.pk,
-                technician.email,
+                technician.pk, technician.email,
             )
 
         logger.info(
             "Technician #%s (%s %s) marked as Inactive by administrator '%s'.",
-            technician.pk,
-            technician.first_name,
-            technician.last_name,
+            technician.pk, technician.first_name, technician.last_name,
             request.user.username,
         )
 
@@ -273,17 +282,19 @@ class TechnicianViewSet(viewsets.ModelViewSet):
             {'detail': 'Technician record has been marked as Inactive.'},
             status=status.HTTP_200_OK,
         )
+
+
 # ---------------------------------------------------------------------------
 # Inventory ViewSet
 # ---------------------------------------------------------------------------
 
 class InventoryViewSet(viewsets.ModelViewSet):
     """
-    UC5 -- Full CRUD for Inventory records.
+    UC18, UC19, UC20 -- Full CRUD for Inventory records.
 
     Access: Administrator only.
     The status field is managed automatically by the model based on quantity.
-    Uniqueness of the inventory name is enforced by the serializer.
+    Name uniqueness is enforced by the serializer (case-insensitive).
     """
 
     queryset           = Inventory.objects.all()
@@ -297,24 +308,92 @@ class InventoryViewSet(viewsets.ModelViewSet):
 
 class JobInventoryViewSet(viewsets.ModelViewSet):
     """
-    Manage the assignment of Inventory items to a specific Job.
+    UC21, UC22 -- Manage assignment of Inventory items (parts) to a Job.
 
-    Access: Administrator only.
-    Supports filtering by job via the ?job=<id> query parameter.
+    UC21 (Admin-Triggered): permitted when job status is Allocated, In Progress,
+    or Completed. Access: Administrator only.
+
+    UC22 (Technician-Triggered): permitted only when job status is Allocated or
+    In Progress, and the technician must be assigned to the job. Access: Technician.
+
+    Permission and status validation is enforced in create() and destroy().
+    Filtering by job via ?job=<id> is supported for both list views.
     """
 
     queryset           = JobInventory.objects.select_related('job', 'inventory')
     serializer_class   = JobInventorySerializer
-    permission_classes = [IsAdministrator]
+    permission_classes = [IsAdministrator | IsTechnician]
 
     def get_queryset(self):
         """Filter by job ID if the 'job' query parameter is provided."""
         job_id = self.request.query_params.get('job')
+        qs = JobInventory.objects.select_related('job', 'inventory')
         if job_id:
-            return JobInventory.objects.filter(
-                job_id=job_id
-            ).select_related('inventory')
-        return super().get_queryset()
+            qs = qs.filter(job_id=job_id)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        """
+        UC21, UC22 -- Add a part to a job.
+
+        Administrators (UC21): job must be Allocated, In Progress, or Completed.
+        Technicians (UC22): job must be Allocated or In Progress, and the
+        requesting technician must be the one assigned to the job.
+        """
+        profile = getattr(request.user, 'profile', None)
+
+        serializer = JobInventorySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        job_id = serializer.validated_data['job'].pk
+        try:
+            job = Job.objects.get(pk=job_id)
+        except Job.DoesNotExist:
+            return Response({'error': 'Job not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if profile and profile.is_technician:
+            # UC22 -- technician is restricted to Allocated and In Progress only.
+            allowed_statuses = [Job.Status.ALLOCATED, Job.Status.IN_PROGRESS]
+            if job.status not in allowed_statuses:
+                return Response(
+                    {
+                        'error': (
+                            "Job parts can only be added to a job with a status of "
+                            "Allocated or In Progress."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # UC22 -- technician must be assigned to this job.
+            if not job.technician or job.technician.email != request.user.email:
+                return Response(
+                    {'error': 'You are not assigned to this job.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        else:
+            # UC21 -- administrator is permitted for Allocated, In Progress, and Completed.
+            allowed_statuses = [
+                Job.Status.ALLOCATED,
+                Job.Status.IN_PROGRESS,
+                Job.Status.COMPLETED,
+            ]
+            if job.status not in allowed_statuses:
+                return Response(
+                    {
+                        'error': (
+                            "Job parts can only be added to a job with a status of "
+                            "Allocated, In Progress, or Completed."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        job_inventory = serializer.save()
+        return Response(
+            JobInventorySerializer(job_inventory).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +402,12 @@ class JobInventoryViewSet(viewsets.ModelViewSet):
 
 class JobViewSet(viewsets.ModelViewSet):
     """
-    UC1, UC2, UC9 -- Full CRUD for Job records.
+    UC2, UC16, UC17, UC23, UC24 -- Full CRUD for Job records.
 
     Access:
-        Administrator -- full access to all jobs.
-        Technician    -- read access to own allocated jobs; can update status.
+        Administrator -- full access to all jobs and all status transitions.
+        Technician    -- read access to own assigned jobs; In Progress and
+                         Completed transitions (UC23, UC24).
         Customer      -- read access to own jobs only (matched by email).
     """
 
@@ -335,7 +415,7 @@ class JobViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdministrator | IsTechnician | IsCustomer]
 
     def get_serializer_class(self):
-        """Use the create serializer for POST; the full serializer for all other actions."""
+        """Use the create serializer for POST; the full serializer otherwise."""
         if self.action == 'create':
             return JobCreateSerializer
         return JobSerializer
@@ -364,7 +444,7 @@ class JobViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """
-        UC2 -- Create a standalone job record.
+        UC2 -- Create a standalone Job record.
         Status is always forced to Pending regardless of submitted value.
         """
         serializer = JobCreateSerializer(data=request.data)
@@ -377,29 +457,50 @@ class JobViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='update-status')
     def update_status(self, request, pk=None):
         """
-        UC9 -- Update the status of an existing job.
+        UC16, UC23, UC24 -- Update the status of an existing job.
 
-        Valid transitions:
-            -> In Progress  (no feedback required)
-            -> Completed    (no feedback required; invoice auto-generated)
-            -> Suspended    (admin_feedback or technician_feedback required)
-            -> Cancelled    (admin_feedback or technician_feedback required)
+        Transition rules enforced by JobStatusUpdateSerializer:
+            Allocated   -> In Progress  (UC23 -- technician; records start_time)
+            In Progress -> Completed    (UC24 -- technician; records end_time,
+                                                creates draft Invoice)
+            Allocated/In Progress -> Suspended   (admin_feedback required)
+            Allocated/In Progress -> Cancelled   (admin_feedback required)
 
-        The user's role is derived from their UserProfile and injected into
-        the serializer to determine which feedback field is required.
+        The current_status of the job is injected into the serializer so
+        transition guards can be evaluated without trusting client input.
         """
         job     = self.get_object()
         profile = getattr(request.user, 'profile', None)
         role    = profile.role if profile else ''
 
         serializer = JobStatusUpdateSerializer(
-            data={**request.data, 'role': role}
+            data={
+                **request.data,
+                'role':           role,
+                'current_status': job.status,
+            }
         )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         validated  = serializer.validated_data
         new_status = validated['new_status']
+
+        # -- UC23: Record the job start time when transitioning to In Progress.
+        if new_status == Job.Status.IN_PROGRESS:
+            job.start_time = timezone.now()
+            logger.info(
+                "UC23 -- Job #%s start_time recorded as %s by technician '%s'.",
+                job.pk, job.start_time, request.user.username,
+            )
+
+        # -- UC24: Record the job end time when transitioning to Completed.
+        if new_status == Job.Status.COMPLETED:
+            job.end_time = timezone.now()
+            logger.info(
+                "UC24 -- Job #%s end_time recorded as %s by technician '%s'.",
+                job.pk, job.end_time, request.user.username,
+            )
 
         job.status = new_status
 
@@ -410,15 +511,16 @@ class JobViewSet(viewsets.ModelViewSet):
 
         job.save()
 
-        # UC9, step 9 -- auto-generate invoice when the job is completed.
+        # -- UC24, step 9: Auto-generate a draft Invoice on job completion.
         invoice_data = None
         if new_status == Job.Status.COMPLETED:
             try:
-                invoice = generate_invoice(job)
+                invoice      = generate_invoice(job)
                 invoice_data = InvoiceSerializer(invoice).data
             except Exception as exc:
                 logger.error(
-                    "Invoice generation failed for Job #%s: %s", job.pk, exc
+                    "UC24 -- Invoice generation failed for Job #%s: %s",
+                    job.pk, exc,
                 )
 
         response_data = {'job': JobSerializer(job).data}
@@ -434,37 +536,29 @@ class JobViewSet(viewsets.ModelViewSet):
 
 class BookingViewSet(viewsets.ModelViewSet):
     """
-    UC3, UC4, UC7 -- Manage Booking records.
+    UC3, UC4, UC8, UC9, UC10, UC15 -- Manage Booking records.
 
     Access: Administrator only for all standard CRUD and actions.
-    The booking_token_submit endpoint is separate and unauthenticated (UC4).
+    The booking_token_submit view is separate and unauthenticated (UC4).
     """
 
     queryset           = Booking.objects.select_related('job', 'customer', 'technician')
     permission_classes = [IsAdministrator]
 
     def get_serializer_class(self):
-        """Use the create serializer for POST; the read serializer for all other actions."""
+        """Use the create serializer for POST; the read serializer otherwise."""
         if self.action == 'create':
             return BookingCreateSerializer
         return BookingSerializer
 
     def get_queryset(self):
-        """
-        Return bookings ordered with Pending first, then by creation time
-        to support first-come-first-served processing in UC7.
-        """
+        """Return bookings with Pending first to prioritise the UC15 allocation queue."""
         return Booking.objects.select_related(
             'job', 'customer', 'technician'
         ).order_by('created_at')
 
     def create(self, request, *args, **kwargs):
-        """
-        UC3 -- Create a new Booking record with status Pending.
-
-        The administrator supplies the physical address, date, and time
-        for a job that already exists in the system.
-        """
+        """UC3 -- Create a new Booking record with status Pending."""
         serializer = BookingCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -472,16 +566,40 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = serializer.save(status=Booking.Status.PENDING)
         return Response(BookingSerializer(booking).data, status=status.HTTP_201_CREATED)
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        UC9 -- Soft-delete a booking record by setting status to Inactive.
+
+        A Confirmed booking cannot be deleted (UC9, step 5a.3a.1).
+        """
+        booking = self.get_object()
+
+        if booking.status == Booking.Status.CONFIRMED:
+            return Response(
+                {'error': 'A Confirmed booking cannot be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = Booking.Status.INACTIVE
+        booking.save()
+
+        logger.info(
+            "Booking #%s marked as Inactive by administrator '%s'.",
+            booking.pk, request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Booking record has been marked as Inactive.'},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=['post'], url_path='send-request')
     def send_request(self, request, pk=None):
         """
         UC4 -- Email the customer a signed booking form link.
 
-        A time-limited signed token is generated using Django's built-in
-        signing framework (TimestampSigner). The token encodes the booking ID
-        and is stored on the Booking record for validation at submission time.
-
-        Rejects the action if no email address is recorded for the customer.
+        Generates a time-limited signed token using Django's TimestampSigner,
+        stores it on the Booking record, and dispatches the email.
         """
         booking  = self.get_object()
         customer = booking.customer
@@ -492,7 +610,6 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Generate a signed token encoding the booking ID.
         token  = signing.dumps({'booking_id': booking.pk}, salt='booking-request')
         expiry = timezone.now() + timedelta(hours=BOOKING_TOKEN_EXPIRY_HOURS)
 
@@ -507,18 +624,52 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         return Response({'message': 'Booking request email sent successfully.'})
 
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject(self, request, pk=None):
+        """
+        UC10 -- Reject a Pending booking.
+
+        Only a Pending booking may be rejected (UC10, step 5b.3a.1).
+        The record is retained as an audit log.
+        """
+        booking = self.get_object()
+
+        if booking.status != Booking.Status.PENDING:
+            return Response(
+                {
+                    'error': (
+                        f"Booking is '{booking.status}', not Pending. "
+                        "Only a Pending booking can be rejected."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = Booking.Status.REJECTED
+        booking.save()
+
+        logger.info(
+            "Booking #%s rejected by administrator '%s'.",
+            booking.pk, request.user.username,
+        )
+
+        return Response(
+            {'detail': 'Booking record has been set to Rejected.'},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=['post'], url_path='allocate')
     def allocate(self, request, pk=None):
         """
-        UC7 -- Allocate a technician to a Pending booking.
+        UC15 -- Allocate a technician to a Pending booking.
 
-        Steps performed:
-            1. Confirm the booking is in Pending status.
+        Steps:
+            1. Confirm booking is in Pending status.
             2. Retrieve and validate the supplied technician.
             3. Calculate road distance via OpenRouteService.
             4. Update booking: status -> Confirmed, assign technician, store distance.
             5. Update job: status -> Allocated, assign technician.
-            6. Send confirmation emails to both customer and technician.
+            6. Send confirmation emails to customer and technician.
         """
         booking = self.get_object()
 
@@ -543,7 +694,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Calculate road distance between technician home and booking address (UC7, step 7).
+        # Calculate road distance between technician home and booking address (UC15, step 7).
         distance_km = None
         if technician.home_address and booking.physical_address:
             distance_km = get_road_distance_km(
@@ -557,19 +708,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                     booking.pk,
                 )
 
-        # Confirm the booking (UC7, step 10).
         booking.technician = technician
         booking.status     = Booking.Status.CONFIRMED
         booking.distance   = distance_km
         booking.save()
 
-        # Update the job (UC7, step 11).
         job            = booking.job
         job.technician = technician
         job.status     = Job.Status.ALLOCATED
         job.save()
 
-        # Send confirmation emails to both parties (UC7, steps 12 and 13).
         _send_allocation_email_to_customer(booking)
         _send_allocation_email_to_technician(booking)
 
@@ -579,87 +727,21 @@ class BookingViewSet(viewsets.ModelViewSet):
             'distance_km': distance_km,
         })
 
-    def destroy(self, request, *args, **kwargs):
-        """
-        UC6, Alternate Course Step 5a -- Soft-delete a booking record.
-
-        A booking with a status of Confirmed cannot be deleted (UC6, Step 5a.3a.1).
-        For Pending bookings, the record is NOT physically removed. Instead, the
-        status is set to Inactive to preserve it as an audit log (UC6, Step 5a.5).
-        """
-        booking = self.get_object()
-
-        if booking.status == Booking.Status.CONFIRMED:
-            return Response(
-                {'error': 'A Confirmed booking cannot be deleted.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        booking.status = Booking.Status.INACTIVE
-        booking.save()
-
-        logger.info(
-            "Booking #%s marked as Inactive by administrator '%s'.",
-            booking.pk,
-            request.user.username,
-        )
-
-        return Response(
-            {'detail': 'Booking record has been marked as Inactive.'},
-            status=status.HTTP_200_OK,
-        )
-
-    @action(detail=True, methods=['post'], url_path='reject')
-    def reject(self, request, pk=None):
-        """
-        UC6, Alternate Course Step 5b -- Reject a Pending booking.
-
-        Only a booking with a status of Pending can be rejected (UC6, Step 5b.3a.1).
-        On confirmation, the status is set to Rejected and the record is retained
-        as an audit log (UC6, Step 5b.5 and 5b.6).
-
-        Endpoint: POST /api/bookings/{id}/reject/
-        Access:   Administrator only.
-        """
-        booking = self.get_object()
-
-        if booking.status != Booking.Status.PENDING:
-            return Response(
-                {
-                    'error': (
-                        f"Booking is '{booking.status}', not Pending. "
-                        "Only a Pending booking can be rejected."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        booking.status = Booking.Status.REJECTED
-        booking.save()
-
-        logger.info(
-            "Booking #%s rejected by administrator '%s'.",
-            booking.pk,
-            request.user.username,
-        )
-
-        return Response(
-            {'detail': 'Booking record has been set to Rejected.'},
-            status=status.HTTP_200_OK,
-        )
-
 
 # ---------------------------------------------------------------------------
-# Schedule Block ViewSet
+# Schedule Block ViewSet (raw blocks -- UC26/UC27 use TechnicianScheduleViewSet)
 # ---------------------------------------------------------------------------
 
 class ScheduleBlockViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    Read-only view of technician schedule blocks.
+    Read-only view of raw ScheduleBlock records.
 
     Access:
         Administrator -- all blocks for all technicians.
         Technician    -- own blocks only (matched by email).
+
+    Note: UC26 and UC27 are served by TechnicianScheduleViewSet which
+    returns the structured schedule format defined in the use cases.
     """
 
     queryset           = ScheduleBlock.objects.select_related('technician', 'job', 'booking')
@@ -680,20 +762,415 @@ class ScheduleBlockViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Technician Schedule ViewSet (UC26, UC27)
+# ---------------------------------------------------------------------------
+
+class TechnicianScheduleViewSet(viewsets.ViewSet):
+    """
+    UC26, UC27 -- Technician schedule views.
+
+    UC26 (Admin-Triggered):
+        GET /api/technician-schedule/
+            Returns list of all active technicians, allocated first.
+        GET /api/technician-schedule/{technician_id}/
+            Returns the schedule for the specified technician.
+
+    UC27 (Technician-Triggered):
+        GET /api/my-schedule/
+            Returns the authenticated technician's own schedule.
+
+    Schedule format per use case:
+        - In Progress job displayed first (is_in_progress=True).
+        - Followed by Allocated jobs ordered by booking date and time.
+        - Each entry: Booking ID, Job ID, Customer Full Name,
+          Customer Physical Address, Date, Time, Distance.
+    """
+
+    permission_classes = [IsAdminOrTechnician]
+
+    def list(self, request):
+        """
+        UC26, step 2 -- Return list of all active technicians.
+
+        Allocated technicians (those with at least one Allocated or In Progress
+        booking) are returned first, followed by unallocated technicians.
+        Access: Administrator only.
+        """
+        profile = getattr(request.user, 'profile', None)
+        if not profile or not profile.is_admin:
+            return Response(
+                {'error': 'Only administrators can view the technician list.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from django.db.models import Exists, OuterRef
+
+        # Subquery: does this technician have any Allocated or In Progress bookings?
+        has_active_booking = Booking.objects.filter(
+            technician=OuterRef('pk'),
+            status=Booking.Status.CONFIRMED,
+            job__status__in=[Job.Status.ALLOCATED, Job.Status.IN_PROGRESS],
+        )
+
+        technicians = (
+            Technician.objects
+            .filter(is_active=True)
+            .annotate(is_allocated=Exists(has_active_booking))
+            .order_by('-is_allocated', 'last_name', 'first_name')
+        )
+
+        data = TechnicianSerializer(technicians, many=True).data
+        return Response(data)
+
+    def retrieve(self, request, pk=None):
+        """
+        UC26, steps 3-4 -- Return the schedule for a specific technician.
+
+        Access: Administrator only.
+        Returns In Progress job first, then Allocated jobs ordered by date/time.
+        Returns an empty schedule list if the technician has no active jobs (UC26, step 3a).
+        """
+        profile = getattr(request.user, 'profile', None)
+        if not profile or not profile.is_admin:
+            return Response(
+                {'error': 'Only administrators can view technician schedules.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            technician = Technician.objects.get(pk=pk, is_active=True)
+        except Technician.DoesNotExist:
+            return Response(
+                {'error': 'Technician not found or is inactive.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        schedule = _build_technician_schedule(technician)
+
+        return Response({
+            'technician': TechnicianSerializer(technician).data,
+            'schedule':   TechnicianScheduleEntrySerializer(schedule, many=True).data,
+        })
+
+    @action(detail=False, methods=['get'], url_path='mine',
+            permission_classes=[IsTechnician])
+    def mine(self, request):
+        """
+        UC27 -- Return the authenticated technician's own schedule.
+
+        In Progress job is shown first, followed by Allocated jobs ordered by
+        booking date and time. Returns an empty list if no active jobs exist
+        (UC27, step 2a alternate course).
+        """
+        try:
+            technician = Technician.objects.get(email=request.user.email, is_active=True)
+        except Technician.DoesNotExist:
+            return Response(
+                {'error': 'Technician profile not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        schedule = _build_technician_schedule(technician)
+
+        return Response({
+            'technician': TechnicianSerializer(technician).data,
+            'schedule':   TechnicianScheduleEntrySerializer(schedule, many=True).data,
+        })
+
+
+def _build_technician_schedule(technician: Technician) -> list:
+    """
+    UC26, UC27 -- Build the ordered schedule entry list for a technician.
+
+    Returns a list of dicts matching TechnicianScheduleEntrySerializer:
+        - In Progress jobs first (is_in_progress=True).
+        - Then Allocated jobs ordered by booking date ascending, then time ascending.
+
+    Queries Booking records in Confirmed status whose associated Job is either
+    In Progress or Allocated. The booking provides date, time, distance, and
+    customer address as required by the use cases.
+    """
+    bookings = (
+        Booking.objects
+        .filter(
+            technician=technician,
+            status=Booking.Status.CONFIRMED,
+            job__status__in=[Job.Status.IN_PROGRESS, Job.Status.ALLOCATED],
+        )
+        .select_related('job', 'job__customer')
+        .order_by('date', 'time')
+    )
+
+    in_progress_entries = []
+    allocated_entries   = []
+
+    for booking in bookings:
+        job      = booking.job
+        customer = job.customer
+
+        entry = {
+            'booking_id':         booking.pk,
+            'job_id':             job.pk,
+            'customer_full_name': f"{customer.first_name} {customer.last_name}",
+            'customer_address':   booking.physical_address,
+            'date':               booking.date,
+            'time':               booking.time,
+            'distance':           booking.distance,
+            'job_status':         job.status,
+            'is_in_progress':     job.status == Job.Status.IN_PROGRESS,
+        }
+
+        if job.status == Job.Status.IN_PROGRESS:
+            in_progress_entries.append(entry)
+        else:
+            allocated_entries.append(entry)
+
+    # In Progress job always displayed first per UC26, step 4 / UC27, step 2.
+    return in_progress_entries + allocated_entries
+
+
+# ---------------------------------------------------------------------------
 # Invoice ViewSet
 # ---------------------------------------------------------------------------
 
 class InvoiceViewSet(viewsets.ModelViewSet):
     """
-    UC9 -- View and manage Invoice records.
+    UC24, UC25 -- View and manage Invoice records.
 
     Access: Administrator only.
-    Invoices are generated automatically when a job status is set to Completed.
+
+    Standard list/retrieve: returns all invoices (default ordering: newest first).
+    The list endpoint supports filtering by status via ?status=draft or ?status=sent.
+
+    Custom actions:
+        POST /api/invoices/{id}/recalculate/  -- UC25, steps 5-7
+        POST /api/invoices/{id}/approve/      -- UC25, steps 8-12
+        POST /api/invoices/{id}/customer-view/ -- returns customer-facing fields
+
+    Invoices are created automatically by the invoice_generator service (UC24).
+    Manual creation via POST is disabled.
     """
 
     queryset           = Invoice.objects.select_related('job__customer', 'technician')
     serializer_class   = InvoiceSerializer
     permission_classes = [IsAdministrator]
+
+    def get_queryset(self):
+        """
+        Return invoices filtered by status if the ?status query parameter is supplied.
+        Default ordering is newest first (model Meta ordering applies).
+        """
+        qs     = Invoice.objects.select_related('job__customer', 'job', 'technician')
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        """
+        Invoice creation is handled automatically by the system (UC24).
+        Manual creation via the API is not permitted.
+        """
+        return Response(
+            {'error': 'Invoices are created automatically when a job is completed.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    @action(detail=True, methods=['post'], url_path='recalculate')
+    def recalculate(self, request, pk=None):
+        """
+        UC25, steps 5-7 -- Recalculate invoice cost fields from updated input values.
+
+        Accepts any combination of hours_taken, distance_rate,
+        service_charge_percentage, and notes. Applies the supplied values to
+        the invoice instance and recalculates all derived fields without saving.
+
+        Returns the updated invoice data so the administrator can review the
+        new totals before deciding to approve.
+        """
+        invoice    = self.get_object()
+        serializer = InvoiceRecalculateSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        validated = serializer.validated_data
+
+        # Apply only the fields that were supplied; retain existing values otherwise.
+        if 'hours_taken' in validated:
+            invoice.hours_taken = validated['hours_taken']
+        if 'distance_rate' in validated:
+            invoice.distance_rate = validated['distance_rate']
+        if 'service_charge_percentage' in validated:
+            invoice.service_charge_percentage = validated['service_charge_percentage']
+        if 'notes' in validated:
+            invoice.notes = validated['notes']
+
+        # Recalculate all derived fields (UC25, step 7). Do not save yet.
+        invoice.calculate_totals()
+
+        logger.info(
+            "UC25 -- Invoice #%s recalculated by administrator '%s'. "
+            "hours_taken=%.2f, distance_rate=%.2f, scp=%.2f, total=%.2f.",
+            invoice.pk, request.user.username,
+            invoice.hours_taken, invoice.distance_rate,
+            invoice.service_charge_percentage, invoice.total_cost,
+        )
+
+        return Response(InvoiceSerializer(invoice).data)
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
+        """
+        UC25, steps 8-12 -- Approve a draft invoice.
+
+        Steps performed:
+            1. Validate submitted fields (hours_taken must be > 0, UC25 step 9a).
+            2. Apply updated values and recalculate all cost fields.
+            3. Persist the updated invoice.
+            4. Generate a PDF of the invoice.
+            5. Email the PDF to the customer with invoice details in the body.
+            6. Set invoice status to Sent.
+            7. Return confirmation response (UC25, step 13).
+        """
+        invoice = self.get_object()
+
+        if invoice.status != Invoice.Status.DRAFT:
+            return Response(
+                {'error': f"Invoice is '{invoice.status}', not Draft. Cannot approve."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = InvoiceApproveSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        validated = serializer.validated_data
+
+        # Apply submitted values, retaining existing values for optional fields
+        # that were not supplied.
+        invoice.hours_taken = validated['hours_taken']
+        if 'distance_rate' in validated:
+            invoice.distance_rate = validated['distance_rate']
+        if 'service_charge_percentage' in validated:
+            invoice.service_charge_percentage = validated['service_charge_percentage']
+        if 'notes' in validated:
+            invoice.notes = validated['notes']
+
+        # Recalculate all derived fields with the final values (UC25, step 7).
+        invoice.calculate_totals()
+
+        # Generate the PDF document (UC25, step 10).
+        try:
+            pdf_bytes = _generate_invoice_pdf(invoice)
+        except Exception as exc:
+            logger.error(
+                "UC25 -- PDF generation failed for Invoice #%s: %s",
+                invoice.pk, exc,
+            )
+            return Response(
+                {'error': 'PDF generation failed. Invoice has not been sent.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Email the PDF to the customer (UC25, step 11).
+        try:
+            _send_invoice_to_customer(invoice, pdf_bytes)
+        except Exception as exc:
+            logger.error(
+                "UC25 -- Email dispatch failed for Invoice #%s: %s",
+                invoice.pk, exc,
+            )
+            return Response(
+                {'error': 'Email dispatch failed. Invoice has not been marked as Sent.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Mark as Sent only after both PDF generation and email succeed (UC25, step 12).
+        invoice.status = Invoice.Status.SENT
+        invoice.save()
+
+        logger.info(
+            "UC25 -- Invoice #%s approved and sent to customer '%s' by administrator '%s'.",
+            invoice.pk, invoice.job.customer.email, request.user.username,
+        )
+
+        return Response({
+            'detail': 'Invoice has been approved and sent to the customer.',
+            'invoice': InvoiceSerializer(invoice).data,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Notification ViewSet
+# ---------------------------------------------------------------------------
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    UC24, step 10 -- In-system notification records for the administrator dashboard.
+
+    Access: Administrator only.
+    Returns notifications addressed to the authenticated administrator.
+    Unread notifications are surfaced first.
+
+    Custom action:
+        POST /api/notifications/{id}/mark-read/ -- acknowledges a notification.
+    """
+
+    serializer_class   = NotificationSerializer
+    permission_classes = [IsAdministrator]
+
+    def get_queryset(self):
+        """
+        Return notifications for the authenticated administrator only,
+        ordered with unread first, then by creation time descending.
+        """
+        return Notification.objects.filter(
+            recipient=self.request.user
+        ).order_by('is_read', '-created_at')
+
+    @action(detail=True, methods=['post'], url_path='mark-read')
+    def mark_read(self, request, pk=None):
+        """
+        Mark a single notification as read.
+
+        Sets is_read=True and records read_at timestamp via the model's
+        mark_as_read() method.
+        """
+        notification = self.get_object()
+
+        if notification.is_read:
+            return Response(
+                {'detail': 'Notification is already marked as read.'},
+                status=status.HTTP_200_OK,
+            )
+
+        notification.mark_as_read()
+
+        logger.info(
+            "Notification #%s marked as read by administrator '%s'.",
+            notification.pk, request.user.username,
+        )
+
+        return Response(NotificationSerializer(notification).data)
+
+    @action(detail=False, methods=['post'], url_path='mark-all-read')
+    def mark_all_read(self, request):
+        """
+        Mark all unread notifications for the authenticated administrator as read.
+        """
+        now = timezone.now()
+        updated_count = Notification.objects.filter(
+            recipient=request.user,
+            is_read=False,
+        ).update(is_read=True, read_at=now)
+
+        logger.info(
+            "%d notification(s) marked as read by administrator '%s'.",
+            updated_count, request.user.username,
+        )
+
+        return Response({'detail': f"{updated_count} notification(s) marked as read."})
 
 
 # ---------------------------------------------------------------------------
@@ -702,11 +1179,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
 class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    UC8, UC1 -- View inbound job requests and process them into customer + job records.
+    UC1 -- View inbound job requests and process them into Customer + Job records.
 
     Access: Administrator only.
-    Records are created exclusively by the webhook_intake view (UC8).
-    The process action converts an Unprocessed request into a Customer + Job (UC1).
+    Records are created exclusively by the webhook_intake view.
+    The process action converts an Unprocessed request into a Customer + Job.
     """
 
     queryset           = ClientRequest.objects.all()
@@ -724,9 +1201,6 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
         Validates that all required fields exist on the ClientRequest, then
         creates both records and marks the request as Processed.
-
-        The customer name is split on the first space. If only one name token
-        is present it is used as the first name with last name left blank.
         """
         client_request = self.get_object()
 
@@ -736,19 +1210,16 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Validate required fields on the ClientRequest (UC1, step 6).
         process_serializer = ClientRequestProcessSerializer(
             data={}, context={'client_request': client_request}
         )
         if not process_serializer.is_valid():
             return Response(process_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Parse first and last name from the contact_name field.
         name_parts = client_request.contact_name.strip().split(' ', 1)
         first_name = name_parts[0]
         last_name  = name_parts[1] if len(name_parts) > 1 else ''
 
-        # Create or retrieve the customer record (UC1, step 7).
         customer, _ = Customer.objects.get_or_create(
             email=client_request.contact_email,
             defaults={
@@ -758,7 +1229,6 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
             },
         )
 
-        # Create the job record with status Pending (UC1, step 8).
         job = Job.objects.create(
             customer=customer,
             subject=client_request.subject,
@@ -768,7 +1238,6 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
             client_request=client_request,
         )
 
-        # Mark the request as Processed (UC1, step 9).
         client_request.status = ClientRequest.Status.PROCESSED
         client_request.save(update_fields=['status', 'updated_at'])
 
@@ -780,16 +1249,16 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 # ---------------------------------------------------------------------------
-# AI Response Suggestion ViewSet
+# AI Response Suggestion ViewSet (BR4, BR5 -- descoped, retained for audit)
 # ---------------------------------------------------------------------------
 
 class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    BR4, BR5 -- Review and action AI-generated response suggestions.
+    BR4, BR5 -- Review AI-generated response suggestions.
 
-    Access: Administrator and Technician.
-    Suggestions are created automatically when a ClientRequest is received.
-    No suggestion may be sent without prior explicit approval (BR5).
+    NOTE: This feature was formally descoped. The ViewSet is retained to
+    avoid breaking existing API clients that may query these endpoints.
+    No new suggestions are created by the current application flow.
     """
 
     queryset           = AIResponseSuggestion.objects.select_related('client_request')
@@ -798,17 +1267,12 @@ class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        """
-        BR5 -- Approve a pending AI suggestion.
-
-        The reviewer supplies their edited final response and role.
-        Only suggestions in PENDING status may be approved.
-        """
+        """BR5 -- Approve a pending AI suggestion (descoped; retained for audit)."""
         suggestion = self.get_object()
 
         if suggestion.approval_status != AIResponseSuggestion.ApprovalStatus.PENDING:
             return Response(
-                {'error': f"Suggestion is already '{suggestion.approval_status}', not pending."},
+                {'error': f"Suggestion is already '{suggestion.approval_status}'."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -817,7 +1281,6 @@ class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         suggestion.final_response      = serializer.validated_data['final_response']
-        suggestion.reviewed_by_role    = serializer.validated_data['reviewed_by_role']
         suggestion.reviewed_by_user_id = request.user.pk
         suggestion.reviewed_at         = timezone.now()
         suggestion.approval_status     = AIResponseSuggestion.ApprovalStatus.APPROVED
@@ -827,161 +1290,66 @@ class AIResponseSuggestionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        """
-        BR5 -- Reject a pending AI suggestion.
-
-        The record is retained for audit purposes but will not be sent.
-        """
+        """BR5 -- Reject a pending AI suggestion (descoped; retained for audit)."""
         suggestion = self.get_object()
 
-        suggestion.approval_status     = AIResponseSuggestion.ApprovalStatus.REJECTED
         suggestion.reviewed_by_user_id = request.user.pk
         suggestion.reviewed_at         = timezone.now()
-        suggestion.save()
-
-        return Response(AIResponseSuggestionSerializer(suggestion).data)
-
-    @action(detail=True, methods=['post'])
-    def send(self, request, pk=None):
-        """
-        BR5 -- Dispatch an approved suggestion to the client via email.
-
-        Blocked if the suggestion has not been explicitly approved.
-        On success the suggestion status transitions to SENT.
-        """
-        suggestion = self.get_object()
-
-        if not suggestion.is_sendable:
-            return Response(
-                {'error': 'Only approved suggestions may be sent.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        client_request = suggestion.client_request
-        send_mail(
-            subject=f"Re: {client_request.subject or 'Your Enquiry'}",
-            message=suggestion.final_response,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[client_request.contact_email],
-            fail_silently=False,
-        )
-
-        suggestion.approval_status = AIResponseSuggestion.ApprovalStatus.SENT
-        suggestion.sent_at         = timezone.now()
+        suggestion.approval_status     = AIResponseSuggestion.ApprovalStatus.REJECTED
         suggestion.save()
 
         return Response(AIResponseSuggestionSerializer(suggestion).data)
 
 
 # ---------------------------------------------------------------------------
-# Webhook Intake
+# Public views (no authentication required)
 # ---------------------------------------------------------------------------
 
 @api_view(['POST'])
 @permission_classes([])
 def webhook_intake(request):
     """
-    UC8 -- Receive and acknowledge an inbound job request from the external website.
+    UC1 -- Receive an inbound job request from the external website via API.
 
-    No authentication required. The endpoint is intentionally public.
-
-    Pipeline:
-        1. Validate the payload against WebhookInboundSerializer.
-        2. Persist the ClientRequest with status UNPROCESSED (UC8, step 4).
-        3. Send an acknowledgement email to the client (UC8, step 5 / BR3).
-        4. Send a notification email to the administrator (UC8, step 6).
-        5. Attempt AI suggestion generation; log and continue on failure (BR4).
+    No authentication required. Validates the payload, creates a ClientRequest
+    record, sends an acknowledgement email to the client, and notifies the admin.
     """
     serializer = WebhookInboundSerializer(data=request.data)
+
     if not serializer.is_valid():
-        # UC1, Alternate Course Step 3a.3 -- if a valid email address was
-        # present in the payload, send the company contact details to the
-        # client so they can follow up through another channel.
-        partial_email = request.data.get('email', '').strip()
-        if partial_email:
-            _send_contact_details_email_on_failed_request(partial_email)
+        # UC1, step 3a -- validation failure; send contact details to client if possible.
+        email = request.data.get('email', '').strip()
+        if email:
+            _send_contact_details_email_on_failed_request(email)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    data = serializer.validated_data
+    validated = serializer.validated_data
 
     client_request = ClientRequest.objects.create(
-        contact_name=data['name'],
-        contact_email=data['email'],
-        contact_phone=data.get('phone', ''),
-        subject=data.get('subject', ''),
-        message=data['message'],
-        source_ip=_get_client_ip(request),
-        raw_payload=request.data,
-        status=ClientRequest.Status.UNPROCESSED,
+        source_ip     = _get_client_ip(request),
+        raw_payload   = request.data,
+        subject       = validated.get('subject', ''),
+        message       = validated['message'],
+        contact_name  = f"{validated['first_name']} {validated['last_name']}".strip(),
+        contact_email = validated['email'],
+        contact_phone = validated.get('phone', ''),
+        status        = ClientRequest.Status.UNPROCESSED,
     )
 
-    # Send acknowledgement to the client (BR3, UC8 step 5).
-    send_confirmation(client_request)
-
-    # Notify the administrator of the new request (UC8, step 6).
+    _send_client_acknowledgement_email(client_request)
     _send_admin_new_request_notification(client_request)
 
-    # Generate AI suggestion for review (BR4).
-    # A failure here must not prevent the webhook returning a success response.
-    try:
-        generate_ai_suggestion(client_request)
-    except Exception as exc:
-        logger.error(
-            "AI suggestion generation failed for ClientRequest #%s: %s",
-            client_request.pk, exc,
-        )
+    logger.info(
+        "UC1 -- ClientRequest #%s created from webhook (IP: %s).",
+        client_request.pk, client_request.source_ip,
+    )
 
     return Response({
-        'message':    'Request received. A confirmation has been sent to your email.',
+        'message':    'Your request has been received. A confirmation has been sent to your email.',
         'request_id': client_request.pk,
     }, status=status.HTTP_201_CREATED)
 
-def _send_contact_details_email_on_failed_request(email: str):
-    """
-    UC1, Alternate Course Step 3a.3 -- Send the company's contact details to the
-    client when their webhook submission fails validation.
-
-    Only sent if a valid email address was present in the partial payload.
-    Requires COMPANY_CONTACT_PHONE and COMPANY_CONTACT_EMAIL to be set in
-    Django settings. Falls back to placeholder text if not configured.
-    """
-    company_phone = getattr(django_settings, 'COMPANY_CONTACT_PHONE', 'our office number')
-    company_email = getattr(django_settings, 'COMPANY_CONTACT_EMAIL', 'info@tradierm.com')
-
-    subject = "We received your enquiry -- please contact us directly"
-    message = (
-        f"Thank you for reaching out.\n\n"
-        f"Unfortunately we were unable to process your submission because one or more "
-        f"required fields were missing.\n\n"
-        f"Please contact us directly using the details below and we will be happy to assist:\n\n"
-        f"  Phone : {company_phone}\n"
-        f"  Email : {company_email}\n\n"
-        f"Kind regards,\n"
-        f"The TradieRM Team"
-    )
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[email],
-            fail_silently=False,
-        )
-        logger.info(
-            "Contact details email sent to '%s' following failed webhook submission.",
-            email,
-        )
-    except Exception as exc:
-        logger.error(
-            "Failed to send contact details email to '%s': %s",
-            email, exc,
-        )
-
-
-# ---------------------------------------------------------------------------
-# UC4 -- Unauthenticated Customer Booking Form Submission
-# ---------------------------------------------------------------------------
 
 @api_view(['POST'])
 @permission_classes([])
@@ -989,12 +1357,9 @@ def booking_token_submit(request):
     """
     UC4 -- Accept a customer's booking form submission via a signed token link.
 
-    No authentication required. The signed token in the request body
-    identifies the booking and enforces expiry.
-
-    On success the booking is updated with the customer's preferred
-    physical address, date, and time. Status remains Pending until a
-    technician is allocated by the administrator (UC7).
+    No authentication required. The signed token in the request body identifies
+    the booking and enforces expiry. On success the booking is updated with the
+    customer's preferred physical address, date, and time.
     """
     serializer = BookingTokenSubmitSerializer(data=request.data)
     if not serializer.is_valid():
@@ -1003,7 +1368,6 @@ def booking_token_submit(request):
     validated = serializer.validated_data
     token     = validated['token']
 
-    # Validate the signed token.
     try:
         payload    = signing.loads(token, salt='booking-request', max_age=None)
         booking_id = payload.get('booking_id')
@@ -1021,7 +1385,6 @@ def booking_token_submit(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Check whether the token has expired.
     if booking.token_expires_at and timezone.now() > booking.token_expires_at:
         return Response(
             {'error': 'This booking link has expired. Please contact us for a new link.'},
@@ -1034,12 +1397,10 @@ def booking_token_submit(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Update the booking with the customer's submitted details.
     booking.physical_address = validated['physical_address']
     booking.date             = validated['date']
     booking.time             = validated['time']
-    # Clear the token after use to prevent resubmission.
-    booking.booking_token    = ''
+    booking.booking_token    = ''   # Clear token after use to prevent resubmission.
     booking.save()
 
     return Response({
@@ -1049,7 +1410,7 @@ def booking_token_submit(request):
 
 
 # ---------------------------------------------------------------------------
-# Authentication Views
+# Authentication views
 # ---------------------------------------------------------------------------
 
 @api_view(['POST'])
@@ -1071,8 +1432,8 @@ def me(request):
     """
     Return the authenticated user's identity and role.
 
-    Used by the frontend immediately after login to determine which
-    dashboard and navigation options to display.
+    Used by the frontend immediately after login to determine which dashboard
+    and navigation options to render.
     """
     user    = request.user
     profile = getattr(user, 'profile', None)
@@ -1086,25 +1447,177 @@ def me(request):
 
 
 # ---------------------------------------------------------------------------
-# Internal Helpers
+# PDF generation helper (UC25, step 10)
 # ---------------------------------------------------------------------------
 
-def _get_client_ip(request):
+def _generate_invoice_pdf(invoice: Invoice) -> bytes:
     """
-    Extract the originating IP address from the request.
+    UC25, step 10 -- Generate a PDF document for the approved invoice.
 
-    Checks X-Forwarded-For first to handle requests routed through a
-    proxy or load balancer. Falls back to REMOTE_ADDR.
+    Uses the reportlab library if available. Falls back to a plain-text
+    PDF-like byte string for environments where reportlab is not installed,
+    so the approve action is never blocked by a missing dependency.
+
+    Returns raw PDF bytes suitable for attachment to an email.
     """
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        return x_forwarded_for.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR')
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        buffer = io.BytesIO()
+        c      = rl_canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+
+        customer   = invoice.job.customer
+        technician = invoice.technician
+
+        # -- Header
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(20 * mm, height - 25 * mm, "TAX INVOICE")
+
+        c.setFont("Helvetica", 10)
+        c.drawString(20 * mm, height - 35 * mm, f"Invoice #:    {invoice.pk}")
+        c.drawString(20 * mm, height - 41 * mm, f"Date:         {invoice.date_generated.strftime('%d %B %Y')}")
+        c.drawString(20 * mm, height - 47 * mm, f"Job #:        {invoice.job.pk}")
+        c.drawString(20 * mm, height - 53 * mm, f"Subject:      {invoice.job.subject}")
+
+        # -- Customer details
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(20 * mm, height - 65 * mm, "Bill To")
+        c.setFont("Helvetica", 10)
+        c.drawString(20 * mm, height - 72 * mm, f"{customer.first_name} {customer.last_name}")
+        c.drawString(20 * mm, height - 78 * mm, customer.address or '')
+        c.drawString(20 * mm, height - 84 * mm, customer.phone or '')
+        c.drawString(20 * mm, height - 90 * mm, customer.email or '')
+
+        # -- Technician details
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(110 * mm, height - 65 * mm, "Technician")
+        c.setFont("Helvetica", 10)
+        if technician:
+            c.drawString(110 * mm, height - 72 * mm,
+                         f"{technician.first_name} {technician.last_name}")
+            c.drawString(110 * mm, height - 78 * mm, technician.email or '')
+
+        # -- Cost breakdown
+        y = height - 110 * mm
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(20 * mm, y, "Cost Breakdown")
+        c.setFont("Helvetica", 10)
+
+        rows = [
+            ("Hours Taken",              f"{invoice.hours_taken:.2f} hrs"),
+            ("Hourly Rate",              f"${invoice.hourly_rate:.2f}"),
+            ("Labour Cost",              f"${invoice.labour_cost:.2f}"),
+            ("Distance",                 f"{invoice.distance:.2f} km"),
+            ("Distance Rate",            f"${invoice.distance_rate:.2f}/km"),
+            ("Distance Cost",            f"${invoice.distance_cost:.2f}"),
+            ("Parts Cost",               f"${invoice.parts_cost:.2f}"),
+            ("Subtotal",                 f"${invoice.subtotal:.2f}"),
+            (f"Service Charge ({invoice.service_charge_percentage:.2f}%)",
+             f"${invoice.service_charge:.2f}"),
+            ("TOTAL",                    f"${invoice.total_cost:.2f}"),
+        ]
+
+        for i, (label, value) in enumerate(rows):
+            row_y = y - (8 * mm) - (i * 7 * mm)
+            if label == "TOTAL":
+                c.setFont("Helvetica-Bold", 11)
+            c.drawString(20 * mm, row_y, label)
+            c.drawRightString(190 * mm, row_y, value)
+            c.setFont("Helvetica", 10)
+
+        if invoice.notes:
+            notes_y = y - (8 * mm) - (len(rows) * 7 * mm) - 10 * mm
+            c.setFont("Helvetica-Oblique", 9)
+            c.drawString(20 * mm, notes_y, f"Notes: {invoice.notes}")
+
+        c.showPage()
+        c.save()
+
+        return buffer.getvalue()
+
+    except ImportError:
+        # reportlab is not installed -- generate a minimal plain-text fallback.
+        logger.warning(
+            "reportlab is not installed. Generating plain-text invoice for Invoice #%s.",
+            invoice.pk,
+        )
+        customer = invoice.job.customer
+        text = (
+            f"TAX INVOICE\n"
+            f"Invoice #: {invoice.pk}\n"
+            f"Date: {invoice.date_generated.strftime('%d %B %Y')}\n"
+            f"Job #: {invoice.job.pk}\n\n"
+            f"Customer: {customer.first_name} {customer.last_name}\n"
+            f"Address: {customer.address}\n\n"
+            f"Labour Cost:    ${invoice.labour_cost:.2f}\n"
+            f"Distance Cost:  ${invoice.distance_cost:.2f}\n"
+            f"Parts Cost:     ${invoice.parts_cost:.2f}\n"
+            f"Subtotal:       ${invoice.subtotal:.2f}\n"
+            f"Service Charge: ${invoice.service_charge:.2f}\n"
+            f"TOTAL:          ${invoice.total_cost:.2f}\n"
+        )
+        return text.encode('utf-8')
 
 
-def _send_technician_welcome_email(technician, username: str, temp_password: str):
+# ---------------------------------------------------------------------------
+# Email helpers
+# ---------------------------------------------------------------------------
+
+def _send_invoice_to_customer(invoice: Invoice, pdf_bytes: bytes) -> None:
     """
-    UC6, step 9 -- Send a welcome email to a newly created technician
+    UC25, step 11 -- Email the approved invoice PDF to the customer.
+
+    Attaches the PDF and includes key invoice details in the email body.
+    Raises an exception on failure so the caller (approve action) can
+    abort and return an error response without marking the invoice as Sent.
+    """
+    customer = invoice.job.customer
+
+    subject = f"Your invoice from TradieRM -- Invoice #{invoice.pk}"
+    body    = (
+        f"Dear {customer.first_name},\n\n"
+        f"Please find attached your invoice for the recent service.\n\n"
+        f"  Invoice #      : {invoice.pk}\n"
+        f"  Job #          : {invoice.job.pk}\n"
+        f"  Subject        : {invoice.job.subject}\n"
+        f"  Labour Cost    : ${invoice.labour_cost:.2f}\n"
+        f"  Distance Cost  : ${invoice.distance_cost:.2f}\n"
+        f"  Parts Cost     : ${invoice.parts_cost:.2f}\n"
+        f"  Subtotal       : ${invoice.subtotal:.2f}\n"
+        f"  Service Charge : ${invoice.service_charge:.2f}\n"
+        f"  TOTAL          : ${invoice.total_cost:.2f}\n\n"
+    )
+    if invoice.notes:
+        body += f"Notes: {invoice.notes}\n\n"
+
+    body += (
+        f"If you have any questions regarding this invoice, please contact us.\n\n"
+        f"Kind regards,\n"
+        f"The TradieRM Team"
+    )
+
+    from_email = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com')
+
+    email_msg = EmailMessage(
+        subject    = subject,
+        body       = body,
+        from_email = from_email,
+        to         = [customer.email],
+    )
+    email_msg.attach(
+        filename     = f"invoice_{invoice.pk}.pdf",
+        content      = pdf_bytes,
+        mimetype     = 'application/pdf',
+    )
+    email_msg.send(fail_silently=False)
+
+
+def _send_technician_welcome_email(technician, username: str, temp_password: str) -> None:
+    """
+    UC11, step 9 -- Send a welcome email to a newly created technician
     with their login credentials.
     """
     subject = "Your TradieRM account has been created"
@@ -1119,30 +1632,59 @@ def _send_technician_welcome_email(technician, username: str, temp_password: str
     )
     try:
         send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[technician.email],
-            fail_silently=False,
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [technician.email],
+            fail_silently  = False,
         )
     except Exception as exc:
         logger.error(
-            "Failed to send welcome email to technician #%s (%s): %s",
+            "Failed to send welcome email to Technician #%s (%s): %s",
             technician.pk, technician.email, exc,
         )
 
 
-def _send_admin_new_request_notification(client_request):
+def _send_client_acknowledgement_email(client_request) -> None:
     """
-    UC8, step 6 -- Notify the administrator that a new job request has arrived.
+    UC1, step 6 -- Send an acknowledgement email to the client confirming
+    that their job request has been successfully received.
+    """
+    subject = "We have received your job request"
+    message = (
+        f"Dear {client_request.contact_name},\n\n"
+        f"Thank you for submitting your job request. "
+        f"We have received it and our team will be in touch shortly.\n\n"
+        f"  Request reference : #{client_request.pk}\n"
+        f"  Subject           : {client_request.subject}\n\n"
+        f"Kind regards,\n"
+        f"The TradieRM Team"
+    )
+    try:
+        send_mail(
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [client_request.contact_email],
+            fail_silently  = False,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to send acknowledgement email for ClientRequest #%s: %s",
+            client_request.pk, exc,
+        )
 
-    Requires ADMIN_NOTIFICATION_EMAIL to be set in Django settings.
-    Logs a warning and skips silently if it is not configured.
+
+def _send_admin_new_request_notification(client_request) -> None:
+    """
+    UC1, step 7 -- Notify the administrator that a new job request has arrived.
+
+    Requires ADMIN_NOTIFICATION_EMAIL to be configured in settings.
     """
     admin_email = getattr(django_settings, 'ADMIN_NOTIFICATION_EMAIL', None)
     if not admin_email:
         logger.warning(
-            "ADMIN_NOTIFICATION_EMAIL is not configured in settings. "
+            "ADMIN_NOTIFICATION_EMAIL is not configured. "
             "Admin notification for ClientRequest #%s skipped.",
             client_request.pk,
         )
@@ -1161,11 +1703,11 @@ def _send_admin_new_request_notification(client_request):
     )
     try:
         send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[admin_email],
-            fail_silently=False,
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [admin_email],
+            fail_silently  = False,
         )
     except Exception as exc:
         logger.error(
@@ -1174,9 +1716,9 @@ def _send_admin_new_request_notification(client_request):
         )
 
 
-def _send_booking_request_email(customer, booking, booking_link: str):
+def _send_booking_request_email(customer, booking, booking_link: str) -> None:
     """
-    UC4 -- Email the customer a link to the booking form.
+    UC4 -- Email the customer a link to the unauthenticated booking form.
     """
     subject = f"Please select your preferred appointment time -- Job #{booking.job_id}"
     message = (
@@ -1191,23 +1733,23 @@ def _send_booking_request_email(customer, booking, booking_link: str):
     )
     try:
         send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[customer.email],
-            fail_silently=False,
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [customer.email],
+            fail_silently  = False,
         )
     except Exception as exc:
         logger.error(
-            "Failed to send booking request email to customer #%s (%s): %s",
+            "Failed to send booking request email to Customer #%s (%s): %s",
             customer.pk, customer.email, exc,
         )
 
 
-def _send_allocation_email_to_customer(booking):
+def _send_allocation_email_to_customer(booking) -> None:
     """
-    UC7, step 12 -- Notify the customer that a technician has been allocated
-    and their appointment is confirmed.
+    UC15 -- Notify the customer that a technician has been allocated and their
+    appointment is confirmed.
     """
     customer   = booking.customer
     technician = booking.technician
@@ -1227,22 +1769,22 @@ def _send_allocation_email_to_customer(booking):
     )
     try:
         send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[customer.email],
-            fail_silently=False,
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [customer.email],
+            fail_silently  = False,
         )
     except Exception as exc:
         logger.error(
-            "Failed to send allocation email to customer #%s (%s): %s",
+            "Failed to send allocation email to Customer #%s (%s): %s",
             customer.pk, customer.email, exc,
         )
 
 
-def _send_allocation_email_to_technician(booking):
+def _send_allocation_email_to_technician(booking) -> None:
     """
-    UC7, step 13 -- Notify the technician that a job has been allocated to them.
+    UC15 -- Notify the technician that a job has been allocated to them.
     """
     technician = booking.technician
     customer   = booking.customer
@@ -1263,14 +1805,60 @@ def _send_allocation_email_to_technician(booking):
     )
     try:
         send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
-            recipient_list=[technician.email],
-            fail_silently=False,
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [technician.email],
+            fail_silently  = False,
         )
     except Exception as exc:
         logger.error(
-            "Failed to send allocation email to technician #%s (%s): %s",
+            "Failed to send allocation email to Technician #%s (%s): %s",
             technician.pk, technician.email, exc,
         )
+
+
+def _send_contact_details_email_on_failed_request(email: str) -> None:
+    """
+    UC1, step 3a.3 -- Send the company's contact details to the client when
+    their webhook submission fails validation.
+    """
+    company_phone = getattr(django_settings, 'COMPANY_CONTACT_PHONE', 'our office number')
+    company_email = getattr(django_settings, 'COMPANY_CONTACT_EMAIL', 'info@tradierm.com')
+
+    subject = "We received your enquiry -- please contact us directly"
+    message = (
+        f"Thank you for reaching out.\n\n"
+        f"Unfortunately we were unable to process your submission because one or more "
+        f"required fields were missing.\n\n"
+        f"Please contact us directly:\n\n"
+        f"  Phone : {company_phone}\n"
+        f"  Email : {company_email}\n\n"
+        f"Kind regards,\n"
+        f"The TradieRM Team"
+    )
+    try:
+        send_mail(
+            subject        = subject,
+            message        = message,
+            from_email     = getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+            recipient_list = [email],
+            fail_silently  = False,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to send contact details email to '%s': %s", email, exc,
+        )
+
+
+def _get_client_ip(request) -> str:
+    """
+    Extract the originating IP address from the request.
+
+    Checks X-Forwarded-For first to handle requests routed through a proxy
+    or load balancer. Falls back to REMOTE_ADDR.
+    """
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        return x_forwarded_for.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
