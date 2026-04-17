@@ -4,16 +4,16 @@ tradiePrototype/models.py
 All database models for TradieRM.
 
 Model inventory:
-    Customer             -- UC1, UC2
-    Technician           -- UC11, UC12, UC13, UC14
-    Job                  -- UC2, UC4, UC15, UC16, UC17, UC23, UC24
-    Inventory            -- UC18, UC19, UC20
-    JobInventory         -- UC21, UC22 (parts assigned to a job)
-    Booking              -- UC3, UC4, UC8, UC9, UC10
-    ScheduleBlock        -- UC26, UC27 (technician timetable blocks)
-    Invoice              -- UC24, UC25 (auto-created on completion, reviewed by admin)
-    Notification         -- UC24 (in-system admin alert for completed jobs)
-    ClientRequest        -- UC1 (inbound from external website)
+    Customer             -- UC2, UC5, UC7, UC8, UC9
+    Technician           -- UC13, UC14, UC15, UC16
+    Job                  -- UC2, UC5, UC17, UC18, UC19, UC25, UC26
+    Inventory            -- UC20, UC21, UC22
+    JobInventory         -- UC23, UC24 (parts assigned to a job)
+    Booking              -- UC3, UC4, UC9, UC10, UC11, UC17
+    ScheduleBlock        -- UC28, UC29 (technician timetable blocks)
+    Invoice              -- UC26, UC27 (auto-created on completion, reviewed by admin)
+    Notification         -- UC26 (in-system admin alert for completed jobs)
+    ClientRequest        -- UC2 (inbound from external website)
     AIResponseSuggestion -- BR4, BR5 (descoped; retained for audit)
     UserProfile          -- Role-based access control
 """
@@ -89,15 +89,27 @@ class Customer(models.Model):
 
 class Technician(models.Model):
     """
-    UC11 -- Stores technician profile and credentials.
+    UC13, UC14, UC15, UC16 -- Stores technician profile and credentials.
 
-    Created exclusively by administrators via UC11. On creation, a Django User
+    Created exclusively by administrators via UC13. On creation, a Django User
     account is provisioned with a temporary password equal to the technician's
-    phone number and a welcome email is dispatched.
+    telephone number and a welcome email is dispatched.
 
-    home_address is the origin point for road distance calculation (UC15).
-    hourly_rate is copied to the Invoice at generation time (UC24) to preserve
+    physical_address is the origin point for road distance calculation (UC17).
+    hourly_rate is copied to the Invoice at generation time (UC26) to preserve
     a historical snapshot independent of future rate changes.
+
+    Status lifecycle:
+        Active   -- default on creation.
+        Inactive -- set by the administrator via UC15 (Delete Technician).
+                    Record is retained as an audit log.
+
+    Field names align with the approved Database Dictionary:
+        telephone_number  -- VARCHAR(15)
+        physical_address  -- VARCHAR(255)
+        email_address     -- VARCHAR(254), unique
+        status            -- VARCHAR(10), choices: active / inactive
+        role              -- VARCHAR(15), fixed value: technician
     """
 
     class Gender(models.TextChoices):
@@ -105,15 +117,32 @@ class Technician(models.Model):
         FEMALE = 'female', 'Female'
         OTHER  = 'other',  'Other'
 
-    first_name   = models.CharField(max_length=100)
-    last_name    = models.CharField(max_length=100)
-    email        = models.EmailField(unique=True)
-    phone        = models.CharField(max_length=20, blank=True)
-    gender       = models.CharField(max_length=10, choices=Gender.choices, blank=True)
-    home_address = models.TextField(blank=True)
-    skill        = models.CharField(max_length=255, blank=True)
-    hourly_rate  = models.DecimalField(max_digits=8, decimal_places=2, default=0)
-    is_active    = models.BooleanField(default=True)  # UC13 -- soft delete flag
+    class Status(models.TextChoices):
+        ACTIVE   = 'active',   'Active'
+        INACTIVE = 'inactive', 'Inactive'
+
+    class Role(models.TextChoices):
+        TECHNICIAN = 'technician', 'Technician'
+
+    first_name       = models.CharField(max_length=100)
+    last_name        = models.CharField(max_length=100)
+    telephone_number = models.CharField(max_length=15, blank=True)
+    gender           = models.CharField(max_length=10, choices=Gender.choices, blank=True)
+    physical_address = models.CharField(max_length=255, blank=True)
+    email_address    = models.CharField(max_length=254, unique=True)
+    skill            = models.CharField(max_length=100, blank=True)
+    role             = models.CharField(
+        max_length=15,
+        choices=Role.choices,
+        default=Role.TECHNICIAN,
+    )
+    hourly_rate      = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    username         = models.CharField(max_length=50, unique=True, blank=True)
+    status           = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -124,6 +153,19 @@ class Technician(models.Model):
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
+    @property
+    def is_active(self):
+        """
+        Convenience property for backwards-compatible queryset checks.
+        Returns True if status is Active.
+        """
+        return self.status == self.Status.ACTIVE
+
+    @property
+    def full_name(self):
+        """Returns the technician's full name for display purposes."""
+        return f"{self.first_name} {self.last_name}"
+
 
 # ---------------------------------------------------------------------------
 # Job
@@ -131,21 +173,28 @@ class Technician(models.Model):
 
 class Job(models.Model):
     """
-    UC2, UC4, UC15, UC16, UC17, UC23, UC24 -- Central work order record.
+    UC2, UC5, UC17, UC18, UC19, UC25, UC26 -- Central work order record.
 
-    Status lifecycle (UC16, UC23, UC24):
-        Pending -> Allocated  (UC15 -- technician allocated via booking)
-        Allocated -> In Progress  (UC23 -- technician starts the job)
-        In Progress -> Completed  (UC24 -- technician completes the job)
+    Status lifecycle (UC18, UC25, UC26):
+        Pending     -> Allocated    (UC17 -- technician allocated via booking)
+        Allocated   -> In Progress  (UC25 -- technician starts the job)
+        In Progress -> Completed    (UC26 -- technician completes the job)
         Allocated/In Progress -> Suspended  (admin_feedback required)
         Allocated/In Progress -> Cancelled  (admin_feedback required)
 
-    start_time is recorded when the technician transitions the job to In Progress (UC23).
-    end_time is recorded when the technician transitions the job to Completed (UC24).
-    hours_taken on the Invoice is derived from end_time - start_time (UC24, step 9).
+    start_time is recorded when the technician transitions the job to In Progress (UC25).
+    end_time is recorded when the technician transitions the job to Completed (UC26).
+    hours_taken on the Invoice is derived from end_time - start_time (UC26, step 9).
 
+    job_title is a short descriptive title entered by the administrator (UC2, step 8).
     source records how the job entered the system.
-    client_request links back to the originating ClientRequest if applicable (UC1).
+    client_request links back to the originating ClientRequest if applicable (UC2).
+
+    Field names align with the approved Database Dictionary:
+        job_title      -- VARCHAR(50)
+        subject        -- VARCHAR(255)
+        client_message -- TEXT
+        status         -- VARCHAR(15)
     """
 
     class Status(models.TextChoices):
@@ -172,6 +221,7 @@ class Job(models.Model):
         null=True, blank=True, related_name='jobs'
     )
 
+    job_title      = models.CharField(max_length=50)
     subject        = models.CharField(max_length=255)
     client_message = models.TextField()
     status         = models.CharField(
@@ -181,14 +231,14 @@ class Job(models.Model):
         max_length=10, choices=Source.choices, default=Source.MANUAL
     )
 
-    # Feedback fields -- mandatory when status is Suspended or Cancelled (UC16).
+    # Feedback fields -- mandatory when status is Suspended or Cancelled (UC18).
     admin_feedback      = models.TextField(blank=True)
     technician_feedback = models.TextField(blank=True)
 
-    # Job execution timestamps recorded by the technician (UC23, UC24).
-    # start_time: set when the technician transitions the job to In Progress.
-    # end_time:   set when the technician transitions the job to Completed.
-    # Both are used to derive hours_taken when creating the draft Invoice.
+    # Job execution timestamps recorded by the technician (UC25, UC26).
+    # start_time: set when the technician transitions the job to In Progress (UC25).
+    # end_time:   set when the technician transitions the job to Completed (UC26).
+    # Both are used to derive hours_taken when creating the draft Invoice (UC26).
     start_time = models.DateTimeField(null=True, blank=True)
     end_time   = models.DateTimeField(null=True, blank=True)
 
@@ -199,7 +249,7 @@ class Job(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"Job #{self.pk} -- {self.subject} ({self.status})"
+        return f"Job #{self.pk} -- {self.job_title} ({self.status})"
 
     @property
     def is_completed(self):
@@ -218,10 +268,17 @@ class Job(models.Model):
 
 class Inventory(models.Model):
     """
-    UC18, UC19, UC20 -- Standalone inventory record for spare parts and materials.
+    UC20, UC21, UC22 -- Standalone inventory record for spare parts and materials.
 
-    name is unique to prevent duplicate entries (UC18, step 7).
+    Inventory_Name is unique to prevent duplicate entries (UC20, step 8).
     Status is automatically managed by the save() method based on quantity.
+
+    Field names align with the approved Database Dictionary:
+        inventory_name -- VARCHAR(255), unique
+        description    -- VARCHAR(255)
+        quantity       -- INTEGER
+        cost           -- NUMERIC(10,2)
+        status         -- VARCHAR(15), choices: in_stock / out_of_stock
     """
 
     class Status(models.TextChoices):
@@ -264,14 +321,14 @@ class Inventory(models.Model):
 
 class JobInventory(models.Model):
     """
-    UC21, UC22 -- Links a Job to an Inventory item and records quantity used.
+    UC23, UC24 -- Links a Job to an Inventory item and records quantity used.
 
-    Admin-triggered (UC21): permitted when job status is Allocated, In Progress,
+    Admin-triggered (UC23): permitted when job status is Allocated, In Progress,
     or Completed.
-    Technician-triggered (UC22): permitted only when job status is Allocated or
+    Technician-triggered (UC24): permitted only when job status is Allocated or
     In Progress.
 
-    quantity_used drives the parts_cost calculation on the Invoice (UC24, step 9).
+    quantity_used drives the parts_cost calculation on the Invoice (UC26, step 9).
     unique_together prevents the same inventory item being added twice to one job.
     """
 
@@ -298,26 +355,30 @@ class JobInventory(models.Model):
 
 class Booking(models.Model):
     """
-    UC3, UC4, UC8, UC9, UC10, UC15 -- Scheduling record linking a job to a
+    UC3, UC4, UC9, UC10, UC11, UC17 -- Scheduling record linking a job to a
     date, time, and physical location.
 
-    Created in Pending status (UC3 or UC4).
-    Transitions to Confirmed when a technician is allocated (UC15).
+    Created in Pending status (UC3 or UC5).
+    Transitions to Confirmed when a technician is allocated (UC17).
 
     distance stores road distance in kilometres between the technician's
-    home address and the customer's physical address. Calculated via
-    OpenRouteService during allocation (UC15) and used in invoice generation
-    (UC24, step 9).
+    physical address and the customer's physical address. Calculated via
+    OpenRouteService during allocation (UC17) and used in invoice generation
+    (UC26, step 9).
 
     booking_token and token_expires_at support the unauthenticated
     customer-facing booking form link (UC4).
+
+    Status choices align with the approved Database Dictionary:
+        Pending / Confirmed / Rejected / Cancelled / Inactive
     """
 
     class Status(models.TextChoices):
         PENDING   = 'pending',   'Pending'
         CONFIRMED = 'confirmed', 'Confirmed'
         REJECTED  = 'rejected',  'Rejected'
-        INACTIVE  = 'inactive',  'Inactive'  # UC9 -- soft delete via administrator
+        CANCELLED = 'cancelled', 'Cancelled'
+        INACTIVE  = 'inactive',  'Inactive'
 
     job      = models.ForeignKey(Job, on_delete=models.CASCADE, related_name='bookings')
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='bookings')
@@ -330,10 +391,10 @@ class Booking(models.Model):
     date             = models.DateField()
     time             = models.TimeField()
     status           = models.CharField(
-        max_length=10, choices=Status.choices, default=Status.PENDING
+        max_length=15, choices=Status.choices, default=Status.PENDING
     )
 
-    # Road distance in km, populated during technician allocation (UC15).
+    # Road distance in km, populated during technician allocation (UC17).
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     # Signed token for the unauthenticated customer booking form link (UC4).
@@ -359,7 +420,7 @@ class Booking(models.Model):
 
 class ScheduleBlock(models.Model):
     """
-    UC26, UC27 -- A single time block on a technician's calendar.
+    UC28, UC29 -- A single time block on a technician's calendar.
 
     Each allocated job produces a JOB block representing time on site.
     A TRAVEL block may be added to represent transit time if applicable.
@@ -402,29 +463,30 @@ class ScheduleBlock(models.Model):
 
 class Invoice(models.Model):
     """
-    UC24, UC25 -- Financial document created automatically when a job is completed.
+    UC26, UC27 -- Financial document created automatically when a job is completed.
 
     Lifecycle:
         Draft  -- created automatically by the system when the technician completes
-                  the job (UC24). All cost fields are pre-populated from available data.
+                  the job (UC26). All cost fields are pre-populated from available data.
         Sent   -- set by the administrator after reviewing, adjusting, and approving
-                  the invoice (UC25). A PDF is generated and emailed to the customer.
+                  the invoice (UC27). A PDF is generated and emailed to the customer.
 
-    Cost calculation (UC25, step 7):
-        labour_cost   = hours_taken x hourly_rate
-        distance_cost = distance x distance_rate
-        parts_cost    = sum of all JobInventory line totals for the job
-        subtotal      = labour_cost + distance_cost + parts_cost
+    Cost calculation (UC27, step 7):
+        labour_cost    = hours_taken x hourly_rate
+        distance_cost  = distance x distance_rate
+        parts_cost     = sum of all JobInventory line totals for the job
+        subtotal       = labour_cost + distance_cost + parts_cost
         service_charge = subtotal x (service_charge_percentage / 100)
-        total_cost    = subtotal + service_charge
+        total_cost     = subtotal + service_charge
 
     All rate fields are copied from the technician profile and system settings
     at invoice creation time to preserve a historical snapshot independent of
-    future rate changes (UC24, step 9).
+    future rate changes (UC26, step 9).
 
-    hours_taken and distance_rate are editable by the administrator before approval
-    (UC25, step 5). service_charge_percentage is also editable and defaults to the
-    system-configured value from settings.INVOICE_SERVICE_CHARGE_PERCENTAGE.
+    hours_taken and distance_rate are editable by the administrator before
+    approval (UC27, step 5). service_charge_percentage is also editable and
+    defaults to the system-configured value from
+    settings.INVOICE_SERVICE_CHARGE_PERCENTAGE.
     """
 
     class Status(models.TextChoices):
@@ -449,7 +511,7 @@ class Invoice(models.Model):
     labour_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     # Distance fields -- distance copied from Booking.distance at creation time.
-    # distance_rate defaults to settings.INVOICE_DISTANCE_RATE and is editable (UC25).
+    # distance_rate defaults to settings.INVOICE_DISTANCE_RATE and is editable (UC27).
     distance      = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     distance_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     distance_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -457,9 +519,7 @@ class Invoice(models.Model):
     # Parts cost -- sum of all JobInventory line totals at invoice creation time.
     parts_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
-    # Subtotal and service charge (UC25, step 7).
-    # service_charge_percentage defaults to settings.INVOICE_SERVICE_CHARGE_PERCENTAGE.
-    # Stored on the invoice so it is editable per-invoice and historically preserved.
+    # Subtotal and service charge (UC27, step 7).
     subtotal                  = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     service_charge_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     service_charge            = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -480,10 +540,9 @@ class Invoice(models.Model):
         Recalculate all derived cost fields from current input values.
 
         This method does NOT save the instance. The caller is responsible
-        for calling save() after this method returns, allowing the caller
-        to validate or inspect values before persisting.
+        for calling save() after this method returns.
 
-        Formula (UC25, step 7):
+        Formula (UC27, step 7):
             labour_cost    = hours_taken x hourly_rate
             distance_cost  = distance x distance_rate
             parts_cost     = sum of JobInventory line totals (read from DB)
@@ -496,7 +555,6 @@ class Invoice(models.Model):
         self.labour_cost   = self.hours_taken * self.hourly_rate
         self.distance_cost = self.distance * self.distance_rate
 
-        # Re-aggregate parts cost directly from JobInventory to ensure accuracy.
         self.parts_cost = sum(
             ji.line_total
             for ji in self.job.job_inventory.select_related('inventory').all()
@@ -504,7 +562,6 @@ class Invoice(models.Model):
 
         self.subtotal = self.labour_cost + self.distance_cost + self.parts_cost
 
-        # Divide by 100 to convert percentage integer/decimal to a multiplier.
         rate = Decimal(str(self.service_charge_percentage)) / Decimal('100')
         self.service_charge = self.subtotal * rate
         self.total_cost     = self.subtotal + self.service_charge
@@ -518,17 +575,10 @@ class Invoice(models.Model):
 
 class Notification(models.Model):
     """
-    UC24, step 10 -- In-system notification record for the administrator dashboard.
+    UC26, step 10 -- In-system notification record for the administrator dashboard.
 
-    Created automatically when a technician marks a job as Completed (UC24).
+    Created automatically when a technician marks a job as Completed (UC26).
     The administrator is alerted that a completed job requires invoice finalisation.
-
-    is_read is set to True when the administrator acknowledges the notification
-    via the API. Unread notifications are surfaced on the dashboard.
-
-    recipient is the Django User targeted by the notification. For UC24 this is
-    always an administrator account, but the model is generic enough to support
-    other notification types in the future.
     """
 
     class NotificationType(models.TextChoices):
@@ -541,8 +591,6 @@ class Notification(models.Model):
         max_length=30, choices=NotificationType.choices
     )
 
-    # Contextual foreign keys -- nullable to allow future notification types
-    # that may not involve a job or invoice.
     job     = models.ForeignKey(
         Job, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='notifications'
@@ -569,10 +617,7 @@ class Notification(models.Model):
         )
 
     def mark_as_read(self):
-        """
-        Mark this notification as read and record the timestamp.
-        Saves the instance immediately.
-        """
+        """Mark this notification as read and record the timestamp."""
         from django.utils import timezone
         self.is_read = True
         self.read_at = timezone.now()
@@ -585,39 +630,50 @@ class Notification(models.Model):
 
 class ClientRequest(models.Model):
     """
-    UC1 -- Inbound job request received via the public webhook endpoint.
+    UC2 -- Inbound job request received via the public webhook endpoint.
 
-    Records are created exclusively by the webhook_intake view (UC1).
+    Records are created exclusively by the webhook_intake view.
     Administrators process Unprocessed records to create Customer + Job records.
     The raw payload is stored for audit purposes regardless of processing outcome.
+
+    Field names align with the approved Database Dictionary:
+        first_name       -- VARCHAR(100)
+        last_name        -- VARCHAR(100)
+        email_address    -- VARCHAR(100)
+        telephone_number -- VARCHAR(15)
+        subject          -- VARCHAR(255)
+        client_message   -- TEXT
+        status           -- VARCHAR(15), choices: unprocessed / processed
+        date_received    -- TIMESTAMP, auto-set on creation
     """
 
     class Status(models.TextChoices):
         UNPROCESSED = 'unprocessed', 'Unprocessed'
         PROCESSED   = 'processed',   'Processed'
 
-    source_ip     = models.GenericIPAddressField(null=True, blank=True)
-    raw_payload   = models.JSONField(default=dict)
-    subject       = models.CharField(max_length=255, blank=True)
-    message       = models.TextField()
-    contact_name  = models.CharField(max_length=200, blank=True)
-    contact_email = models.EmailField(blank=True)
-    contact_phone = models.CharField(max_length=20, blank=True)
-    status        = models.CharField(
+    source_ip        = models.GenericIPAddressField(null=True, blank=True)
+    raw_payload      = models.JSONField(default=dict)
+    first_name       = models.CharField(max_length=100, blank=True)
+    last_name        = models.CharField(max_length=100, blank=True)
+    email_address    = models.CharField(max_length=100, blank=True)
+    telephone_number = models.CharField(max_length=15, blank=True)
+    subject          = models.CharField(max_length=255, blank=True)
+    client_message   = models.TextField(blank=True)
+    status           = models.CharField(
         max_length=15, choices=Status.choices, default=Status.UNPROCESSED
     )
 
+    date_received   = models.DateTimeField(auto_now_add=True)
     acknowledged_at = models.DateTimeField(null=True, blank=True)
-    created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-date_received']
 
     def __str__(self):
         return (
-            f"ClientRequest #{self.pk} from {self.contact_name} "
-            f"<{self.contact_email}> ({self.status})"
+            f"ClientRequest #{self.pk} from {self.first_name} {self.last_name} "
+            f"<{self.email_address}> ({self.status})"
         )
 
 
@@ -630,11 +686,7 @@ class AIResponseSuggestion(models.Model):
     BR4, BR5 -- AI-generated response suggestion for a client request.
 
     NOTE: This feature was formally descoped from the project. This model is
-    retained in the schema for audit purposes only. No new records are created
-    via the current application flow.
-
-    Was always created in PENDING status and required explicit human approval
-    before the suggested response could be sent to the client (BR5).
+    retained in the schema for audit purposes only.
     """
 
     class ApprovalStatus(models.TextChoices):
@@ -689,7 +741,7 @@ class UserProfile(models.Model):
     Extends Django's built-in User model with a role field for RBAC.
 
     Administrators are created via createsuperuser only.
-    Technicians are created by administrators via UC11.
+    Technicians are created by administrators via UC13.
     Role determines which API endpoints and UI views the user can access.
     """
 

@@ -103,9 +103,9 @@ class TechnicianAdmin(admin.ModelAdmin):
     is_active reflects soft-delete state set by UC13 (Delete Technician).
     """
 
-    list_display    = ['id', 'first_name', 'last_name', 'email', 'phone', 'skill', 'hourly_rate', 'is_active']
-    search_fields   = ['first_name', 'last_name', 'email']
-    list_filter     = ['is_active', 'gender']
+    list_display    = ['id', 'first_name', 'last_name', 'email_address', 'telephone_number', 'skill', 'hourly_rate', 'is_active']
+    search_fields   = ['first_name', 'last_name', 'email_address']
+    list_filter     = ['status', 'gender']
     ordering        = ['last_name', 'first_name']
     readonly_fields = ['created_at', 'updated_at']
 
@@ -263,11 +263,11 @@ class ClientRequestAdmin(admin.ModelAdmin):
     acknowledged_at, raw_payload, and source_ip are set by the view layer.
     """
 
-    list_display    = ['id', 'contact_name', 'contact_email', 'status', 'acknowledged_at', 'created_at']
+    list_display    = ['id', 'first_name', 'last_name', 'email_address', 'status', 'acknowledged_at', 'date_received']
     list_filter     = ['status']
-    search_fields   = ['contact_name', 'contact_email', 'subject']
-    ordering        = ['-created_at']
-    readonly_fields = ['acknowledged_at', 'raw_payload', 'source_ip', 'created_at', 'updated_at']
+    search_fields   = ['first_name', 'last_name', 'email_address', 'subject']
+    ordering        = ['-date_received']
+    readonly_fields = ['acknowledged_at', 'raw_payload', 'source_ip', 'date_received', 'updated_at']
     inlines         = [AIResponseSuggestionInline]
 
 
