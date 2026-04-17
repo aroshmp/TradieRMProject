@@ -28,20 +28,37 @@ from django.contrib.auth.models import User
 
 class Customer(models.Model):
     """
-    UC1, UC2 -- Stores customer contact details.
+    UC2, UC5, UC7, UC8, UC9 -- Stores customer contact details.
 
-    Created either from a ClientRequest (UC1) or manually by the administrator (UC2).
-    Soft-delete is implemented via is_active (UC6). Setting is_active to False marks
-    the record as Inactive and excludes it from standard list queries while
-    retaining it as an audit log.
+    Created either from a ClientRequest (UC2) or manually by the administrator (UC5).
+
+    Status lifecycle:
+        Active   -- default on creation.
+        Inactive -- set by the administrator via UC8 (Delete Customer).
+                    Record is retained as an audit log; excluded from standard
+                    list queries but not physically deleted.
+
+    Field names align with the approved Database Dictionary:
+        telephone_number  -- VARCHAR(15)
+        physical_address  -- VARCHAR(255), nullable (supplied later via UC4)
+        email_address     -- VARCHAR(254), unique
+        status            -- VARCHAR(10), choices: active / inactive
     """
 
-    first_name = models.CharField(max_length=100)
-    last_name  = models.CharField(max_length=100)
-    email      = models.EmailField(unique=True)
-    phone      = models.CharField(max_length=20, blank=True)
-    address    = models.TextField(blank=True)
-    is_active  = models.BooleanField(default=True)  # UC6 -- soft delete flag
+    class Status(models.TextChoices):
+        ACTIVE   = 'active',   'Active'
+        INACTIVE = 'inactive', 'Inactive'
+
+    first_name       = models.CharField(max_length=100)
+    last_name        = models.CharField(max_length=100)
+    telephone_number = models.CharField(max_length=15, blank=True)
+    physical_address = models.CharField(max_length=255, blank=True)
+    email_address    = models.CharField(max_length=254, unique=True)
+    status           = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -50,6 +67,19 @@ class Customer(models.Model):
         ordering = ['last_name', 'first_name']
 
     def __str__(self):
+        return f"{self.first_name} {self.last_name}"
+
+    @property
+    def is_active(self):
+        """
+        Convenience property for backwards-compatible queryset checks.
+        Returns True if status is Active.
+        """
+        return self.status == self.Status.ACTIVE
+
+    @property
+    def full_name(self):
+        """Returns the customer's full name for display purposes."""
         return f"{self.first_name} {self.last_name}"
 
 

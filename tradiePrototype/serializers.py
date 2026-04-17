@@ -52,11 +52,54 @@ from .models import (
 # ---------------------------------------------------------------------------
 
 class CustomerSerializer(serializers.ModelSerializer):
-    """Full read/write serializer for Customer records."""
+    """
+    UC2, UC5, UC7, UC8, UC9 -- Full read/write serializer for Customer records.
+
+    Exposes all database fields using the approved field names from the
+    Database Dictionary. The full_name computed property is included as a
+    read-only convenience field for list display.
+    """
+
+    full_name = serializers.ReadOnlyField()
 
     class Meta:
-        model  = Customer
-        fields = '__all__'
+        model = Customer
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'full_name',
+            'telephone_number',
+            'physical_address',
+            'email_address',
+            'status',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+    def validate_email_address(self, value):
+        """
+        Enforce email_address uniqueness on both create and update.
+        Excludes the current instance on update to allow saving without
+        changing the email address.
+        """
+        qs = Customer.objects.filter(email_address__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                'A customer with this email address already exists.'
+            )
+        return value.lower()
+
+    def validate_telephone_number(self, value):
+        """Enforce the 15-character max length from the Database Dictionary."""
+        if len(value) > 15:
+            raise serializers.ValidationError(
+                'Telephone number must not exceed 15 characters.'
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -453,12 +496,12 @@ class InvoiceSerializer(serializers.ModelSerializer):
         return f"{customer.first_name} {customer.last_name}"
 
     def get_customer_address(self, obj) -> str:
-        """Return the customer's registered address (UC25, step 4)."""
-        return obj.job.customer.address
+        """Return the customer's physical address (UC27, step 4)."""
+        return obj.job.customer.physical_address
 
     def get_customer_phone(self, obj) -> str:
-        """Return the customer's telephone number (UC25, step 4)."""
-        return obj.job.customer.phone
+        """Return the customer's telephone number (UC27, step 4)."""
+        return obj.job.customer.telephone_number
 
     def get_technician_full_name(self, obj) -> str:
         """Return the technician's full name for invoice display (UC25, step 10)."""

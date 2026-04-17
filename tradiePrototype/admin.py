@@ -77,13 +77,17 @@ class AIResponseSuggestionInline(admin.TabularInline):
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
     """
-    UC2, UC6 -- Customer records.
-    is_active reflects soft-delete state set by UC6 (Delete Customer).
+    UC2, UC7, UC8, UC9 -- Customer records.
+
+    status reflects the soft-delete state set by UC8 (Delete Customer).
+    Active records are shown by default; inactive records are retained
+    as an audit log.
     """
 
-    list_display    = ['id', 'first_name', 'last_name', 'email', 'phone', 'is_active', 'created_at']
-    search_fields   = ['first_name', 'last_name', 'email']
-    list_filter     = ['is_active']
+    list_display    = ['id', 'first_name', 'last_name', 'email_address',
+                       'telephone_number', 'status', 'created_at']
+    search_fields   = ['first_name', 'last_name', 'email_address']
+    list_filter     = ['status']
     ordering        = ['last_name', 'first_name']
     readonly_fields = ['created_at', 'updated_at']
 
