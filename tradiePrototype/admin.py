@@ -104,8 +104,7 @@ class TechnicianAdmin(admin.ModelAdmin):
     """
 
     # NEW
-    list_display = ['id', 'first_name', 'last_name', 'email_address', 'telephone_number', 'skill', 'hourly_rate',
-                    'status']
+    list_display    = ['id', 'first_name', 'last_name', 'email_address', 'telephone_number', 'skill', 'hourly_rate', 'status']
     search_fields   = ['first_name', 'last_name', 'email_address']
     list_filter     = ['status', 'gender']
     ordering        = ['last_name', 'first_name']
