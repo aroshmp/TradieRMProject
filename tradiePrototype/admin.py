@@ -103,7 +103,9 @@ class TechnicianAdmin(admin.ModelAdmin):
     is_active reflects soft-delete state set by UC13 (Delete Technician).
     """
 
-    list_display    = ['id', 'first_name', 'last_name', 'email_address', 'telephone_number', 'skill', 'hourly_rate', 'is_active']
+    # NEW
+    list_display = ['id', 'first_name', 'last_name', 'email_address', 'telephone_number', 'skill', 'hourly_rate',
+                    'status']
     search_fields   = ['first_name', 'last_name', 'email_address']
     list_filter     = ['status', 'gender']
     ordering        = ['last_name', 'first_name']

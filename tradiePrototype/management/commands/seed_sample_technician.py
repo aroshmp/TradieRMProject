@@ -6,12 +6,12 @@ Management command: seed_sample_technician
 Creates one realistic sample Technician record and its associated
 Django User account, UserProfile (role=Technician), and authentication Token.
 
-This mirrors the exact pipeline executed by TechnicianViewSet.create() (UC6)
+This mirrors the exact pipeline executed by TechnicianViewSet.create() (UC13)
 without triggering HTTP validation, email side-effects, or requiring an
 active administrator session. Intended for development and demonstration use only.
 
-The temporary password is set to the technician's phone number, consistent
-with the UC6 business rule implemented in the view layer.
+The temporary password is set to the technician's telephone_number, consistent
+with the UC13 business rule implemented in the view layer.
 
 Usage:
     python manage.py seed_sample_technician
@@ -43,23 +43,23 @@ from tradiePrototype.models import Technician, UserProfile
 # ---------------------------------------------------------------------------
 
 SAMPLE_DATA = {
-    # Technician profile fields
-    "first_name":   "Daniel",
-    "last_name":    "Mercer",
-    "email":        "daniel.mercer@tradierm.internal",
-    "phone":        "0421 987 654",
-    "gender":       Technician.Gender.MALE,
-    "home_address": "14 Banksia Drive, Mitcham VIC 3132",
-    "skill":        "Plumbing",
-    "hourly_rate":  "95.00",
-    "is_active":    True,
+    # Technician profile fields (Database Dictionary field names)
+    "first_name":       "Daniel",
+    "last_name":        "Mercer",
+    "email_address":    "daniel.mercer@tradierm.internal",
+    "telephone_number": "0421987654",
+    "gender":           Technician.Gender.MALE,
+    "physical_address": "14 Banksia Drive, Mitcham VIC 3132",
+    "skill":            "Plumbing",
+    "hourly_rate":      "95.00",
+    "role":             Technician.Role.TECHNICIAN,
 
     # Django User account credentials
-    "username":     "daniel.mercer",
+    "username":         "daniel.mercer",
 }
 
-# Seed identifier -- used to detect an existing record before re-creating.
-SEED_EMAIL    = SAMPLE_DATA["email"]
+# Seed identifiers -- used to detect existing records before re-creating.
+SEED_EMAIL    = SAMPLE_DATA["email_address"]
 SEED_USERNAME = SAMPLE_DATA["username"]
 
 
@@ -79,12 +79,8 @@ class Command(BaseCommand):
 
     help = (
         "Provisions one sample Technician record (with User, UserProfile, "
-        "and Token) for UC6 development and demonstration purposes."
+        "and Token) for UC13 development and demonstration purposes."
     )
-
-    # ------------------------------------------------------------------
-    # Argument definition
-    # ------------------------------------------------------------------
 
     def add_arguments(self, parser):
         """
@@ -104,10 +100,6 @@ class Command(BaseCommand):
                 "when either the email or username already exists."
             ),
         )
-
-    # ------------------------------------------------------------------
-    # Command entry point
-    # ------------------------------------------------------------------
 
     def handle(self, *args, **options):
         """
@@ -130,8 +122,10 @@ class Command(BaseCommand):
         # Existence checks
         # ------------------------------------------------------------------
 
-        existing_technician = Technician.objects.filter(email=SEED_EMAIL).first()
-        existing_user       = User.objects.filter(username=SEED_USERNAME).first()
+        existing_technician = Technician.objects.filter(
+            email_address=SEED_EMAIL
+        ).first()
+        existing_user = User.objects.filter(username=SEED_USERNAME).first()
 
         if (existing_technician or existing_user) and not force:
             self.stdout.write(
@@ -174,35 +168,36 @@ class Command(BaseCommand):
                 existing_user.delete()
 
         # ------------------------------------------------------------------
-        # Step 1 -- Create the Technician profile record (UC6, step 7)
+        # Step 1 -- Create the Technician profile record (UC13)
         # ------------------------------------------------------------------
 
         technician = Technician.objects.create(
-            first_name=SAMPLE_DATA["first_name"],
-            last_name=SAMPLE_DATA["last_name"],
-            email=SAMPLE_DATA["email"],
-            phone=SAMPLE_DATA["phone"],
-            gender=SAMPLE_DATA["gender"],
-            home_address=SAMPLE_DATA["home_address"],
-            skill=SAMPLE_DATA["skill"],
-            hourly_rate=SAMPLE_DATA["hourly_rate"],
-            is_active=SAMPLE_DATA["is_active"],
+            first_name       = SAMPLE_DATA["first_name"],
+            last_name        = SAMPLE_DATA["last_name"],
+            email_address    = SAMPLE_DATA["email_address"],
+            telephone_number = SAMPLE_DATA["telephone_number"],
+            gender           = SAMPLE_DATA["gender"],
+            physical_address = SAMPLE_DATA["physical_address"],
+            skill            = SAMPLE_DATA["skill"],
+            hourly_rate      = SAMPLE_DATA["hourly_rate"],
+            role             = SAMPLE_DATA["role"],
+            status           = Technician.Status.ACTIVE,
         )
 
         # ------------------------------------------------------------------
-        # Step 2 -- Create the Django User account (UC6, step 8)
-        # Temporary password is set to the technician's phone number,
+        # Step 2 -- Create the Django User account (UC13)
+        # Temporary password is set to the technician's telephone_number,
         # consistent with the rule in TechnicianViewSet.create().
         # ------------------------------------------------------------------
 
-        temp_password = SAMPLE_DATA["phone"]
+        temp_password = SAMPLE_DATA["telephone_number"]
 
         user = User.objects.create_user(
-            username=SAMPLE_DATA["username"],
-            password=temp_password,
-            email=technician.email,
-            first_name=technician.first_name,
-            last_name=technician.last_name,
+            username   = SAMPLE_DATA["username"],
+            password   = temp_password,
+            email      = technician.email_address,
+            first_name = technician.first_name,
+            last_name  = technician.last_name,
         )
 
         # ------------------------------------------------------------------
@@ -210,9 +205,8 @@ class Command(BaseCommand):
         # ------------------------------------------------------------------
 
         UserProfile.objects.create(
-            user=user,
-            role=UserProfile.Role.TECHNICIAN,
-            phone=technician.phone,
+            user = user,
+            role = UserProfile.Role.TECHNICIAN,
         )
 
         # ------------------------------------------------------------------
@@ -230,22 +224,23 @@ class Command(BaseCommand):
                 f"Sample Technician provisioned successfully.\n"
                 f"\n"
                 f"  Technician\n"
-                f"    pk           : {technician.pk}\n"
-                f"    name         : {technician.first_name} {technician.last_name}\n"
-                f"    email        : {technician.email}\n"
-                f"    phone        : {technician.phone}\n"
-                f"    gender       : {technician.gender}\n"
-                f"    skill        : {technician.skill}\n"
-                f"    hourly_rate  : ${technician.hourly_rate}/hr\n"
-                f"    home_address : {technician.home_address}\n"
-                f"    is_active    : {technician.is_active}\n"
+                f"    pk               : {technician.pk}\n"
+                f"    name             : {technician.first_name} {technician.last_name}\n"
+                f"    email_address    : {technician.email_address}\n"
+                f"    telephone_number : {technician.telephone_number}\n"
+                f"    gender           : {technician.gender}\n"
+                f"    skill            : {technician.skill}\n"
+                f"    hourly_rate      : ${technician.hourly_rate}/hr\n"
+                f"    physical_address : {technician.physical_address}\n"
+                f"    status           : {technician.status}\n"
+                f"    role             : {technician.role}\n"
                 f"\n"
                 f"  Django User\n"
-                f"    pk           : {user.pk}\n"
-                f"    username     : {user.username}\n"
-                f"    temp password: {temp_password}\n"
+                f"    pk               : {user.pk}\n"
+                f"    username         : {user.username}\n"
+                f"    temp password    : {temp_password}\n"
                 f"\n"
-                f"  Auth Token    : {token.key}\n"
+                f"  Auth Token        : {token.key}\n"
                 f"\n"
                 f"Login endpoint : POST /api/auth/login/\n"
                 f"  Body         : username={user.username} / password={temp_password}"

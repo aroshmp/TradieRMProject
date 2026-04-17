@@ -116,10 +116,10 @@ class TechnicianSerializer(serializers.ModelSerializer):
 
 class TechnicianCreateSerializer(serializers.ModelSerializer):
     """
-    UC11 -- Write serializer for administrator-created technician records.
+    UC13 -- Write serializer for administrator-created technician records.
 
     Accepts all profile fields plus a username for login account creation.
-    Password is set programmatically by the view (temp password = phone number).
+    Password is set programmatically by the view (temp password = telephone_number).
     """
 
     username = serializers.CharField(
@@ -130,8 +130,9 @@ class TechnicianCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Technician
         fields = [
-            'first_name', 'last_name', 'gender', 'home_address',
-            'phone', 'email', 'skill', 'hourly_rate', 'username',
+            'first_name', 'last_name', 'gender', 'physical_address',
+            'telephone_number', 'email_address', 'skill',
+            'hourly_rate', 'username',
         ]
 
     def validate_username(self, value):
@@ -142,9 +143,9 @@ class TechnicianCreateSerializer(serializers.ModelSerializer):
             )
         return value
 
-    def validate_email(self, value):
+    def validate_email_address(self, value):
         """Reject if the email is already registered to an existing technician."""
-        if Technician.objects.filter(email=value).exists():
+        if Technician.objects.filter(email_address=value).exists():
             raise serializers.ValidationError(
                 "A technician with this email address already exists."
             )
@@ -244,8 +245,8 @@ class JobCreateSerializer(serializers.ModelSerializer):
     """
 
     class Meta:
-        model  = Job
-        fields = ['customer', 'subject', 'client_message', 'source', 'client_request']
+        model = Job
+        fields = ['customer', 'job_title', 'subject', 'client_message', 'source', 'client_request']
 
     def validate(self, data):
         """Enforce that subject and client_message are non-empty strings."""
@@ -611,9 +612,9 @@ class ClientRequestSerializer(serializers.ModelSerializer):
     """Read serializer for ClientRequest records."""
 
     class Meta:
-        model            = ClientRequest
-        fields           = '__all__'
-        read_only_fields = ['status', 'acknowledged_at', 'created_at', 'updated_at']
+        model = ClientRequest
+        fields = '__all__'
+        read_only_fields = ['status', 'acknowledged_at', 'date_received', 'updated_at']
 
 
 class ClientRequestProcessSerializer(serializers.Serializer):
@@ -630,10 +631,10 @@ class ClientRequestProcessSerializer(serializers.Serializer):
         request_obj = self.context.get('client_request')
         errors = {}
 
-        if not getattr(request_obj, 'contact_name', '').strip():
-            errors['contact_name'] = 'Name is required.'
-        if not getattr(request_obj, 'contact_email', '').strip():
-            errors['contact_email'] = 'Email address is required.'
+        if not getattr(request_obj, 'first_name', '').strip():
+            errors['first_name'] = 'First name is required.'
+        if not getattr(request_obj, 'email_address', '').strip():
+            errors['email_address'] = 'Email address is required.'
         if not getattr(request_obj, 'subject', '').strip():
             errors['subject'] = 'Subject is required.'
 
