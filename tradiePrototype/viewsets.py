@@ -1,5 +1,5 @@
 """
-tradiePrototype/views.py
+tradiePrototype/viewsets.py
 
 All API views for TradieRM.
 

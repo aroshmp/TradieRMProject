@@ -13,7 +13,7 @@ Responsibilities:
     6. Send an email notification to ADMIN_NOTIFICATION_EMAIL (UC24, step 10).
 
 This module contains no view logic. It is imported by JobViewSet.update_status
-in views.py and called after the job status is saved as Completed.
+in viewsets.py and called after the job status is saved as Completed.
 
 Fallback behaviour (UC24 alternate courses):
     - If start_time or end_time is missing, hours_taken is set to 0.00 and a
@@ -335,7 +335,7 @@ def _send_admin_completion_email(job: Job, invoice: Invoice) -> None:
 
     Logs a warning and returns without error if the setting is not configured,
     consistent with the existing pattern used by _send_admin_new_request_notification
-    in views.py.
+    in viewsets.py.
     """
     admin_email = getattr(settings, 'ADMIN_NOTIFICATION_EMAIL', None)
     if not admin_email:

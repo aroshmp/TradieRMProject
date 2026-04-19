@@ -88,7 +88,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 
-from tradiePrototype.views import (
+from tradiePrototype.viewsets import (
     CustomerViewSet,
     TechnicianViewSet,
     InventoryViewSet,
