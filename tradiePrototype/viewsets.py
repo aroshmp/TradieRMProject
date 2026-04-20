@@ -75,6 +75,7 @@ from .serializers import (
     JobStatusUpdateSerializer,
     BookingSerializer,
     BookingCreateSerializer,
+    BookingStubSerializer,
     BookingTokenSubmitSerializer,
     ScheduleBlockSerializer,
     TechnicianScheduleEntrySerializer,
@@ -968,12 +969,29 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='process')
     def process(self, request, pk=None):
-        """UC2 -- Convert an Unprocessed ClientRequest into a Customer and Job record."""
+        """
+        UC2 -- Convert an Unprocessed ClientRequest into a Customer, Job,
+        and stub Booking record.
+
+        The job_title field is required in the request body (UC2 Step 8).
+        physical_address, date, and time are not known at this point; the
+        customer supplies them via the booking form link (UC4).
+
+        All three records are created atomically. If any step fails the
+        request remains Unprocessed and an error is returned.
+        """
         client_request = self.get_object()
 
         if client_request.status != ClientRequest.Status.UNPROCESSED:
             return Response(
                 {'error': 'This request has already been processed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        job_title = request.data.get('job_title', '').strip()
+        if not job_title:
+            return Response(
+                {'error': 'Job Title is required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -986,15 +1004,15 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
         customer, _ = Customer.objects.get_or_create(
             email_address=client_request.email_address,
             defaults={
-                'first_name':       client_request.first_name,
-                'last_name':        client_request.last_name,
+                'first_name': client_request.first_name,
+                'last_name': client_request.last_name,
                 'telephone_number': client_request.telephone_number,
             },
         )
 
         job = Job.objects.create(
             customer=customer,
-            job_title=client_request.subject,
+            job_title=job_title,
             subject=client_request.subject,
             client_message=client_request.client_message,
             status=Job.Status.PENDING,
@@ -1002,21 +1020,29 @@ class ClientRequestViewSet(viewsets.ReadOnlyModelViewSet):
             client_request=client_request,
         )
 
+        # UC2 Step 14 -- create stub Booking record (status: Pending).
+        # physical_address, date, and time are populated later via UC4.
+        booking = Booking.objects.create(
+            job=job,
+            customer=customer,
+            status=Booking.Status.PENDING,
+        )
+
         client_request.status = ClientRequest.Status.PROCESSED
         client_request.save(update_fields=['status', 'updated_at'])
 
         logger.info(
-            "UC2 -- ClientRequest #%s processed. Customer #%s and Job #%s created "
-            "by administrator '%s'.",
-            client_request.pk, customer.pk, job.pk, request.user.username,
+            "UC2 -- ClientRequest #%s processed. Customer #%s, Job #%s, "
+            "and Booking #%s created by administrator '%s'.",
+            client_request.pk, customer.pk, job.pk,
+            booking.pk, request.user.username,
         )
 
         return Response({
-            'customer':       CustomerSerializer(customer).data,
-            'job':            JobSerializer(job).data,
-            'client_request': ClientRequestSerializer(client_request).data,
+            'customer': CustomerSerializer(customer).data,
+            'job': JobSerializer(job).data,
+            'booking': BookingSerializer(booking).data,
         }, status=status.HTTP_201_CREATED)
-
 
 # ---------------------------------------------------------------------------
 # AI Response Suggestion ViewSet (BR4, BR5 -- descoped, retained for audit)

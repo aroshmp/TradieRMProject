@@ -398,6 +398,21 @@ class BookingCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'time': 'Booking time is required.'})
         return data
 
+class BookingStubSerializer(serializers.ModelSerializer):
+    """
+    UC2 -- Write serializer for stub Booking records created during
+    ClientRequest processing.
+
+    A UC2 booking is a placeholder linked to a Customer and Job record.
+    physical_address, date, and time are intentionally absent at creation
+    time; the customer supplies them later via the booking form link (UC4).
+    Status is always set to Pending by the caller.
+    """
+
+    class Meta:
+        model  = Booking
+        fields = ['job', 'customer']
+
 
 class BookingTokenSubmitSerializer(serializers.Serializer):
     """

@@ -387,9 +387,9 @@ class Booking(models.Model):
         null=True, blank=True, related_name='bookings'
     )
 
-    physical_address = models.CharField(max_length=255)
-    date             = models.DateField()
-    time             = models.TimeField()
+    physical_address = models.CharField(max_length=255, blank=True, default='')
+    date = models.DateField(null=True, blank=True)
+    time = models.TimeField(null=True, blank=True)
     status           = models.CharField(
         max_length=15, choices=Status.choices, default=Status.PENDING
     )
