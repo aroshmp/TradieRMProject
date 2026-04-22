@@ -12,7 +12,8 @@ Endpoint summary:
     Customer endpoints:
         /api/customers/                         CustomerViewSet.list / create
         /api/customers/{id}/                    CustomerViewSet.retrieve / update / destroy
-        /api/customers/create-with-job/         UC2 -- combined customer + job create
+        /api/customers/create-with-job/              UC2 -- combined customer + job create
+        /api/customers/{id}/add-job-with-booking/    UC6 -- add job and booking to existing customer
 
     Technician endpoints:
         /api/technicians/                       TechnicianViewSet.list / create

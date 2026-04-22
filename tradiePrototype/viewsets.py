@@ -183,6 +183,114 @@ class CustomerViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=True, methods=['post'], url_path='add-job-with-booking')
+    def add_job_with_booking(self, request, pk=None):
+        """
+        UC6 -- Add a Job record and a Booking record to an existing Customer.
+
+        Request body fields:
+            Required:
+                job_title        (str)  -- administrator-supplied job title
+                subject          (str)  -- job subject line
+                client_message   (str)  -- full job description
+                date             (date) -- preferred booking date (YYYY-MM-DD)
+                time             (time) -- preferred booking time (HH:MM)
+                physical_address (str)  -- booking location address
+
+            Optional customer field updates:
+                email_address    (str)  -- updates the customer record if supplied
+                telephone_number (str)  -- updates the customer record if supplied
+
+        Steps performed (UC6 Steps 8-12):
+            1. Validate all required fields are present and non-empty.
+            2. Optionally update email_address and telephone_number on the
+               customer record if the administrator changed them.
+            3. Create the Job record with status Pending.
+            4. Create the Booking record with status Pending, linked to the
+               customer and the job.
+            5. Send a confirmation email to the customer (UC6 Step 12).
+
+        Returns:
+            201 -- { job: {...}, booking: {...} }
+            400 -- { field: [error message] } on validation failure
+        """
+        customer = self.get_object()
+
+        # -- Collect and validate required job fields.
+        job_title = request.data.get('job_title', '').strip()
+        subject = request.data.get('subject', '').strip()
+        client_message = request.data.get('client_message', '').strip()
+        physical_address = request.data.get('physical_address', '').strip()
+        date = request.data.get('date', '').strip()
+        time_value = request.data.get('time', '').strip()
+
+        errors = {}
+        if not job_title:
+            errors['job_title'] = 'Job Title is required.'
+        if not subject:
+            errors['subject'] = 'Subject is required.'
+        if not client_message:
+            errors['client_message'] = 'Client Message is required.'
+        if not physical_address:
+            errors['physical_address'] = 'Physical Address is required.'
+        if not date:
+            errors['date'] = 'Date is required.'
+        if not time_value:
+            errors['time'] = 'Time is required.'
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # -- Optionally update writable customer fields if supplied.
+        email_address = request.data.get('email_address', '').strip()
+        telephone_number = request.data.get('telephone_number', '').strip()
+
+        customer_updated = False
+        if email_address and email_address != customer.email_address:
+            customer.email_address = email_address
+            customer_updated = True
+        if telephone_number and telephone_number != customer.telephone_number:
+            customer.telephone_number = telephone_number
+            customer_updated = True
+        if physical_address and physical_address != customer.physical_address:
+            customer.physical_address = physical_address
+            customer_updated = True
+        if customer_updated:
+            customer.save()
+
+        # -- UC6 Step 11a -- create the Job record (status: Pending).
+        job = Job.objects.create(
+            customer=customer,
+            job_title=job_title,
+            subject=subject,
+            client_message=client_message,
+            status=Job.Status.PENDING,
+            source=Job.Source.MANUAL,
+        )
+
+        # -- UC6 Step 11b -- create the Booking record (status: Pending).
+        booking = Booking.objects.create(
+            job=job,
+            customer=customer,
+            physical_address=physical_address,
+            date=date,
+            time=time_value,
+            status=Booking.Status.PENDING,
+        )
+
+        logger.info(
+            "UC6 -- Job #%s and Booking #%s created for Customer #%s "
+            "by administrator '%s'.",
+            job.pk, booking.pk, customer.pk, request.user.username,
+        )
+
+        return Response(
+            {
+                'job': JobSerializer(job).data,
+                'booking': BookingSerializer(booking).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Technician ViewSet
@@ -463,8 +571,15 @@ class BookingViewSet(viewsets.ModelViewSet):
         return BookingSerializer
 
     def get_queryset(self):
+        """
+        Returns all Booking records excluding Inactive status.
+        Inactive bookings are soft-deleted records (UC10) and must not
+        appear in any list or detail view.
+        """
         return Booking.objects.select_related(
             'job', 'customer', 'technician'
+        ).exclude(
+            status=Booking.Status.INACTIVE
         ).order_by('created_at')
 
     def create(self, request, *args, **kwargs):
