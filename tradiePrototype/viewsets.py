@@ -320,7 +320,7 @@ class TechnicianViewSet(viewsets.ModelViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         username   = serializer.validated_data.pop('username')
-        technician = serializer.save()
+        technician = serializer.save(username=username)
 
         temp_password = technician.telephone_number or 'changeme123'
         user = User.objects.create_user(
