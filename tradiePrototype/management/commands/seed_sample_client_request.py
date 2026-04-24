@@ -20,7 +20,7 @@ from tradiePrototype.models import ClientRequest
 SAMPLE_PAYLOAD = {
     "first_name": "Alice",
     "last_name":  "Sample",
-    "email":      "alice.sample@example.com",
+    "email":      "doxdoxdox9@gmail.com",
     "phone":      "0412345678",
     "subject":    "Leaking tap in kitchen",
     "message":    "The kitchen tap has been leaking for a week. It gets worse when hot water is used.",

@@ -46,8 +46,8 @@ SAMPLE_DATA = {
     # Technician profile fields (Database Dictionary field names)
     "first_name":       "Daniel",
     "last_name":        "Mercer",
-    "email_address":    "daniel.mercer@tradierm.internal",
-    "telephone_number": "0421987654",
+    "email_address":    "doxdoxdox9@gmail.com",
+    "telephone_number": "0221234567",
     "gender":           Technician.Gender.MALE,
     "physical_address": "14 Banksia Drive, Mitcham VIC 3132",
     "skill":            "Plumbing",
@@ -55,7 +55,7 @@ SAMPLE_DATA = {
     "role":             Technician.Role.TECHNICIAN,
 
     # Django User account credentials
-    "username":         "daniel.mercer",
+    "username":         "doxdoxdox9@gmail.com",
 }
 
 # Seed identifiers -- used to detect existing records before re-creating.
