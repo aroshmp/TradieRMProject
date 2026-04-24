@@ -137,7 +137,7 @@ class Technician(models.Model):
         default=Role.TECHNICIAN,
     )
     hourly_rate      = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    username         = models.CharField(max_length=50, unique=True, blank=True)
+#   username         = models.CharField(max_length=50, unique=True, blank=True)
     status           = models.CharField(
         max_length=10,
         choices=Status.choices,
@@ -525,9 +525,20 @@ class Invoice(models.Model):
     service_charge            = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_cost                = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
-    notes          = models.TextField(blank=True)
+    # ------------------------------------------------------------------
+    # UC26 -- Customer detail snapshot.
+    # Captured at invoice creation time so the invoice record is permanently
+    # independent of any future changes to the Customer record.
+    # Fields are intentionally denormalised -- this is correct design for
+    # financial documents that must reflect the state at time of issue.
+    # ------------------------------------------------------------------
+    snapshot_customer_name = models.CharField(max_length=255, blank=True)
+    snapshot_customer_address = models.CharField(max_length=255, blank=True)
+    snapshot_customer_phone = models.CharField(max_length=15, blank=True)
+
+    notes = models.TextField(blank=True)
     date_generated = models.DateTimeField(auto_now_add=True)
-    updated_at     = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-date_generated']

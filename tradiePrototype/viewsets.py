@@ -320,7 +320,8 @@ class TechnicianViewSet(viewsets.ModelViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         username   = serializer.validated_data.pop('username')
-        technician = serializer.save(username=username)
+#       technician = serializer.save(username=username)
+        technician = serializer.save()
 
         temp_password = technician.telephone_number or 'changeme123'
         user = User.objects.create_user(
@@ -1287,16 +1288,23 @@ def booking_token_submit(request):
         )
 
     booking.physical_address = validated['physical_address']
-    booking.date             = validated['date']
-    booking.time             = validated['time']
-    booking.booking_token    = ''
+    booking.date = validated['date']
+    booking.time = validated['time']
+    booking.booking_token = ''
     booking.save()
 
+    # UC4 -- Always overwrite the Customer record with the submitted address.
+    # The invoice snapshot captured at UC26 creation time ensures all previously
+    # sent invoices are unaffected by this update.
+    customer = booking.customer
+    if customer:
+        customer.physical_address = validated['physical_address']
+        customer.save(update_fields=['physical_address'])
+
     return Response({
-        'message':    'Your booking request has been received. We will confirm your appointment shortly.',
+        'message': 'Your booking request has been received. We will confirm your appointment shortly.',
         'booking_id': booking.pk,
     })
-
 
 # ---------------------------------------------------------------------------
 # Authentication views
@@ -1355,10 +1363,10 @@ def _generate_invoice_pdf(invoice: Invoice) -> bytes:
         c.setFont("Helvetica-Bold", 11)
         c.drawString(20 * mm, height - 65 * mm, "Bill To")
         c.setFont("Helvetica", 10)
-        c.drawString(20 * mm, height - 72 * mm, f"{customer.first_name} {customer.last_name}")
-        c.drawString(20 * mm, height - 78 * mm, customer.physical_address or '')
-        c.drawString(20 * mm, height - 84 * mm, customer.telephone_number or '')
-        c.drawString(20 * mm, height - 90 * mm, customer.email_address or '')
+        c.drawString(20 * mm, height - 72 * mm,
+                     invoice.snapshot_customer_name or f"{customer.first_name} {customer.last_name}")
+        c.drawString(20 * mm, height - 78 * mm, invoice.snapshot_customer_address or customer.physical_address or '')
+        c.drawString(20 * mm, height - 84 * mm, invoice.snapshot_customer_phone or customer.telephone_number or '')
 
         c.setFont("Helvetica-Bold", 11)
         c.drawString(110 * mm, height - 65 * mm, "Technician")
@@ -1415,8 +1423,8 @@ def _generate_invoice_pdf(invoice: Invoice) -> bytes:
             f"Invoice #: {invoice.pk}\n"
             f"Date: {invoice.date_generated.strftime('%d %B %Y')}\n"
             f"Job #: {invoice.job.pk}\n\n"
-            f"Customer: {customer.first_name} {customer.last_name}\n"
-            f"Address: {customer.physical_address}\n\n"
+            f"Customer: {invoice.snapshot_customer_name or f'{customer.first_name} {customer.last_name}'}\n"
+            f"Address: {invoice.snapshot_customer_address or customer.physical_address}\n\n"
             f"Labour Cost:    ${invoice.labour_cost:.2f}\n"
             f"Distance Cost:  ${invoice.distance_cost:.2f}\n"
             f"Parts Cost:     ${invoice.parts_cost:.2f}\n"

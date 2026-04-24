@@ -16,6 +16,7 @@ Database: SQLite (local)
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,6 +33,56 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
+# =============================================================================
+# ENVIRONMENT VARIABLE LOADER
+# =============================================================================
+# Reads key=value pairs from a .env file in the project root and injects them
+# into os.environ. This avoids hardcoding credentials in settings.py without
+# requiring third-party packages such as python-decouple or python-dotenv.
+#
+# The .env file must be listed in .gitignore to prevent credential exposure.
+# Lines beginning with '#' and blank lines are ignored.
+# =============================================================================
+
+def _load_env_file(env_path):
+    """
+    Parse a .env file and populate os.environ with its key-value pairs.
+
+    Only keys that are not already present in os.environ are set, allowing
+    actual system environment variables to take precedence over .env values.
+
+    Args:
+        env_path: pathlib.Path pointing to the .env file.
+    """
+    if not env_path.exists():
+        return
+
+    with open(env_path, encoding='utf-8') as fh:
+        for line in fh:
+            line = line.strip()
+
+            # Skip blank lines and comments.
+            if not line or line.startswith('#'):
+                continue
+
+            # Skip lines that do not contain an assignment operator.
+            if '=' not in line:
+                continue
+
+            key, _, value = line.partition('=')
+            key   = key.strip()
+            value = value.strip()
+
+            # Strip optional surrounding quotes from the value.
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+
+            # Do not override variables already set in the system environment.
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_env_file(BASE_DIR / '.env')
 
 # Application definition
 
@@ -148,9 +199,40 @@ REST_FRAMEWORK = {
 OLLAMA_BASE_URL = 'http://localhost:11434'
 OLLAMA_MODEL = 'llama3.2'  # swap for mistral, gemma2, phi3, etc.
 
-# --- Email / Webhook confirmation (BR3) ---
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # swap for SMTP in production
-DEFAULT_FROM_EMAIL = 'noreply@example.com'
+# # --- Email / Webhook confirmation (BR3) ---
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # swap for SMTP in production
+# DEFAULT_FROM_EMAIL = 'noreply@example.com'
+
+# =============================================================================
+# EMAIL CONFIGURATION -- Gmail SMTP
+# =============================================================================
+# Transactional email is delivered via Gmail's SMTP relay service.
+# This configuration is suitable for development and low-volume production use.
+#
+# Prerequisites:
+#   1. Google account must have 2-Step Verification enabled.
+#   2. An App Password must be generated (NOT your regular Gmail password).
+#
+# App Password setup:
+#   Google Account -> Security -> 2-Step Verification -> App Passwords
+#   -> App name: TradieRM -> Copy the 16-character password generated.
+#
+# Environment variable setup (.env file in project root):
+#   EMAIL_HOST_USER     = your_gmail_address@gmail.com
+#   EMAIL_HOST_PASSWORD = xxxx xxxx xxxx xxxx
+#   DEFAULT_FROM_EMAIL  = your_gmail_address@gmail.com
+#
+# Sending limit: 500 emails/day -- sufficient for capstone demonstration.
+# Ensure .env is listed in .gitignore -- never commit credentials.
+# =============================================================================
+
+EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST          = 'smtp.gmail.com'
+EMAIL_PORT          = 587
+EMAIL_USE_TLS       = True
+EMAIL_HOST_USER     = os.environ.get('EMAIL_HOST_USER',     '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL  = os.environ.get('DEFAULT_FROM_EMAIL',  '')
 
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',

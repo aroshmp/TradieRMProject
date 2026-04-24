@@ -132,20 +132,28 @@ def generate_invoice(job: Job) -> Invoice:
     total_cost     = subtotal + service_charge
 
     invoice = Invoice.objects.create(
-        job                       = job,
-        technician                = job.technician,
-        status                    = Invoice.Status.DRAFT,
-        hours_taken               = hours_taken,
-        hourly_rate               = hourly_rate,
-        labour_cost               = labour_cost,
-        distance                  = distance_km,
-        distance_rate             = distance_rate,
-        distance_cost             = distance_cost,
-        parts_cost                = parts_cost,
-        subtotal                  = subtotal,
-        service_charge_percentage = scp,
-        service_charge            = service_charge,
-        total_cost                = total_cost,
+        job=job,
+        technician=job.technician,
+        status=Invoice.Status.DRAFT,
+        hours_taken=hours_taken,
+        hourly_rate=hourly_rate,
+        labour_cost=labour_cost,
+        distance=distance_km,
+        distance_rate=distance_rate,
+        distance_cost=distance_cost,
+        parts_cost=parts_cost,
+        subtotal=subtotal,
+        service_charge_percentage=scp,
+        service_charge=service_charge,
+        total_cost=total_cost,
+
+        # UC26 -- Snapshot customer details at invoice creation time.
+        # These fields are immutable after creation. All invoice display and
+        # PDF generation reads from these fields, not the live Customer record,
+        # so future address or contact changes do not alter sent invoices.
+        snapshot_customer_name=f"{job.customer.first_name} {job.customer.last_name}",
+        snapshot_customer_address=job.customer.physical_address or '',
+        snapshot_customer_phone=job.customer.telephone_number or '',
     )
 
     logger.info(

@@ -107,11 +107,32 @@ class CustomerSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 class TechnicianSerializer(serializers.ModelSerializer):
-    """Read serializer for Technician records."""
+    """
+    Read serializer for Technician records.
+
+    The username field is sourced from the linked Django User account via
+    a lookup on email_address, since username is not stored on the Technician
+    model itself. Returns None if no linked User account exists.
+    """
+
+    username = serializers.SerializerMethodField()
 
     class Meta:
         model  = Technician
         fields = '__all__'
+
+    def get_username(self, obj):
+        """
+        Resolve the username from the Django User account linked to this
+        Technician by matching on email_address.
+
+        Returns the username string if a linked User exists, otherwise None.
+        """
+        try:
+            user = User.objects.get(email=obj.email_address)
+            return user.username
+        except User.DoesNotExist:
+            return None
 
 
 class TechnicianCreateSerializer(serializers.ModelSerializer):
@@ -507,16 +528,35 @@ class InvoiceSerializer(serializers.ModelSerializer):
         ]
 
     def get_customer_full_name(self, obj) -> str:
-        """Return the customer's full name for invoice display (UC25, step 4)."""
+        """
+        Return the customer's full name for invoice display (UC27, step 4).
+        Reads from the snapshot field captured at invoice creation time (UC26).
+        Falls back to the live Customer record for invoices created before
+        snapshot fields were introduced.
+        """
+        if obj.snapshot_customer_name:
+            return obj.snapshot_customer_name
         customer = obj.job.customer
         return f"{customer.first_name} {customer.last_name}"
 
     def get_customer_address(self, obj) -> str:
-        """Return the customer's physical address (UC27, step 4)."""
+        """
+        Return the customer's address for invoice display (UC27, step 4).
+        Reads from the snapshot field captured at invoice creation time (UC26).
+        Falls back to the live Customer record for pre-snapshot invoices.
+        """
+        if obj.snapshot_customer_address:
+            return obj.snapshot_customer_address
         return obj.job.customer.physical_address
 
     def get_customer_phone(self, obj) -> str:
-        """Return the customer's telephone number (UC27, step 4)."""
+        """
+        Return the customer's phone number for invoice display (UC27, step 4).
+        Reads from the snapshot field captured at invoice creation time (UC26).
+        Falls back to the live Customer record for pre-snapshot invoices.
+        """
+        if obj.snapshot_customer_phone:
+            return obj.snapshot_customer_phone
         return obj.job.customer.telephone_number
 
     def get_technician_full_name(self, obj) -> str:
