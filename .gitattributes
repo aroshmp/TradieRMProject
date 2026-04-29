@@ -21,3 +21,6 @@
 *.ico   binary
 *.pdf   binary
 *.zip   binary
+
+requirements.txt text eol=lf
+*.txt text eol=lf
