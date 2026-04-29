@@ -17,7 +17,7 @@ Database: SQLite (local)
 
 from pathlib import Path
 import os
-import dot
+# import dot
 import dotenv
 
 
@@ -253,6 +253,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3000',
     'http://localhost:3001',
     'http://127.0.0.1:3001',
+    'https://your-frontend.vercel.app',
 ]
 
 ORS_API_KEY = 'your_openrouteservice_api_key'
