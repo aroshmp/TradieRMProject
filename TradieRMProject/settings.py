@@ -10,32 +10,29 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
-"""
-Django settings for CRM Backend (single-app version)
-Database: SQLite (local)
-"""
-
 from pathlib import Path
 import os
-# import dot
+
 import dotenv
 
-
 dotenv.load_dotenv()
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+# =============================================================================
+# SECURITY SETTINGS
+# =============================================================================
+# WARNING: keep the secret key used in production secret.
+# WARNING: do not run with DEBUG = True in production.
 
-# SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-(%)shg&nu#_34w4f=750=)u-0o)j^!kpkl&_xo@#=a&98q%&ef'
 
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
 ALLOWED_HOSTS = ['*']
+
 
 # =============================================================================
 # ENVIRONMENT VARIABLE LOADER
@@ -88,7 +85,10 @@ def _load_env_file(env_path):
 
 _load_env_file(BASE_DIR / '.env')
 
-# Application definition
+
+# =============================================================================
+# APPLICATION DEFINITION
+# =============================================================================
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -135,65 +135,63 @@ TEMPLATES = [
 WSGI_APPLICATION = 'TradieRMProject.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
+# =============================================================================
+# DATABASE CONFIGURATION
+# =============================================================================
+# Connection parameters are read from environment variables so that no
+# credentials are stored in source code.
+#
+# Required environment variables:
+#   PGHOST, PGDATABASE, PGPORT, PGUSER, PGPASSWORD
+# =============================================================================
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'HOST': os.getenv('PGHOST'),
-        'NAME': os.getenv('PGDATABASE'),
-        'PORT': os.getenv('PGPORT'),
-        'USER': os.getenv('PGUSER'),
+        'ENGINE':   'django.db.backends.postgresql',
+        'HOST':     os.getenv('PGHOST'),
+        'NAME':     os.getenv('PGDATABASE'),
+        'PORT':     os.getenv('PGPORT'),
+        'USER':     os.getenv('PGUSER'),
         'PASSWORD': os.getenv('PGPASSWORD'),
     }
 }
 
-# Password validation
-# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+
+# =============================================================================
+# PASSWORD VALIDATION
+# =============================================================================
 
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
+# =============================================================================
+# INTERNATIONALISATION
+# =============================================================================
 
 LANGUAGE_CODE = 'en-us'
-
-TIME_ZONE = 'UTC'
-
-USE_I18N = True
-
-USE_TZ = True
+TIME_ZONE     = 'UTC'
+USE_I18N      = True
+USE_TZ        = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
+# =============================================================================
+# STATIC FILES
+# =============================================================================
 
 STATIC_URL = 'static/'
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- Django REST Framework ---
+
+# =============================================================================
+# DJANGO REST FRAMEWORK
+# =============================================================================
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
@@ -206,16 +204,6 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
 }
 
-# --- AI Response Settings (BR4/BR5) ---
-# Uses Ollama — free, local, no API key required.
-# Install: https://ollama.com/download
-# Then run: ollama pull llama3.2 && ollama serve
-OLLAMA_BASE_URL = 'http://localhost:11434'
-OLLAMA_MODEL = 'llama3.2'  # swap for mistral, gemma2, phi3, etc.
-
-# # --- Email / Webhook confirmation (BR3) ---
-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # swap for SMTP in production
-# DEFAULT_FROM_EMAIL = 'noreply@example.com'
 
 # =============================================================================
 # EMAIL CONFIGURATION -- Gmail SMTP
@@ -248,21 +236,81 @@ EMAIL_HOST_USER     = os.environ.get('EMAIL_HOST_USER',     '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL  = os.environ.get('DEFAULT_FROM_EMAIL',  '')
 
+
+# =============================================================================
+# CORS CONFIGURATION
+# =============================================================================
+# CORS_ALLOWED_ORIGINS is built from a hardcoded local-development whitelist
+# plus any additional origins supplied via the CORS_ALLOWED_ORIGINS environment
+# variable as a comma-separated list.
+#
+# This allows new deployment URLs (Vercel, staging, etc.) to be added without
+# modifying source code -- set the variable in the hosting platform's
+# environment panel instead.
+#
+# Example .env / environment variable entry:
+#   CORS_ALLOWED_ORIGINS=https://tradierm-ui-test.vercel.app
+# =============================================================================
+
+_cors_env   = os.environ.get('CORS_ALLOWED_ORIGINS', '')
+_cors_extra = [origin.strip() for origin in _cors_env.split(',') if origin.strip()]
+
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:3001',
     'http://127.0.0.1:3001',
-    'https://tradierm-ui-test.vercel.app',
-]
+] + _cors_extra
 
-ORS_API_KEY = 'your_openrouteservice_api_key'
-ADMIN_NOTIFICATION_EMAIL = 'doxdoxdox9@gmail.com'
-SITE_BASE_URL = 'http://localhost:3000'
+
+# =============================================================================
+# SITE BASE URL
+# =============================================================================
+# Used by UC4 to construct the signed booking form link embedded in the
+# customer email. Must point to the frontend origin where /booking/submit
+# is served.
+#
+# Local development: http://localhost:3000  (default fallback)
+# Cloud deployment:  set SITE_BASE_URL in the backend hosting platform's
+#                    environment panel, e.g.:
+#                      SITE_BASE_URL=https://tradierm-ui-test.vercel.app
+# =============================================================================
+
+SITE_BASE_URL = os.environ.get('SITE_BASE_URL', 'http://localhost:3000')
+
+
+# =============================================================================
+# THIRD-PARTY SERVICE CONFIGURATION
+# =============================================================================
+
+# OpenRouteService API key used for road-distance calculations (UC17).
+ORS_API_KEY = os.environ.get('ORS_API_KEY', 'your_openrouteservice_api_key')
+
+# Recipient address for administrator alert emails.
+ADMIN_NOTIFICATION_EMAIL = os.environ.get('ADMIN_NOTIFICATION_EMAIL', 'doxdoxdox9@gmail.com')
 
 # Company contact details sent to clients when webhook validation fails (UC1, Step 3a.3).
-COMPANY_CONTACT_PHONE = '+61 3 9000 0000'
-COMPANY_CONTACT_EMAIL = 'info@tradierm.com'
+COMPANY_CONTACT_PHONE = os.environ.get('COMPANY_CONTACT_PHONE', '+61 3 9000 0000')
+COMPANY_CONTACT_EMAIL = os.environ.get('COMPANY_CONTACT_EMAIL', 'info@tradierm.com')
 
-INVOICE_SERVICE_CHARGE_PERCENTAGE = 10.00
-INVOICE_DISTANCE_RATE             = 1.50
+
+# =============================================================================
+# INVOICE CONFIGURATION
+# =============================================================================
+
+# Percentage added to the labour + parts subtotal as a service charge.
+INVOICE_SERVICE_CHARGE_PERCENTAGE = float(os.environ.get('INVOICE_SERVICE_CHARGE_PERCENTAGE', '10.00'))
+
+# Per-kilometre rate applied to road distance when calculating distance cost.
+INVOICE_DISTANCE_RATE = float(os.environ.get('INVOICE_DISTANCE_RATE', '1.50'))
+
+
+# =============================================================================
+# AI RESPONSE SETTINGS (BR4/BR5 -- descoped from active implementation)
+# =============================================================================
+# Uses Ollama -- free, local, no API key required.
+# Install: https://ollama.com/download
+# Then run: ollama pull llama3.2 && ollama serve
+
+OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+OLLAMA_MODEL    = os.environ.get('OLLAMA_MODEL',    'llama3.2')
