@@ -38,7 +38,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Alice",
         "last_name":  "Morrison",
-        "email":      "alice.morrison@example.com",
+        "email":      "doxdoxdox9+alice@gmail.com",
         "phone":      "0412 345 678",
         "subject":    "Leaking tap in kitchen",
         "message":    (
@@ -50,7 +50,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Benjamin",
         "last_name":  "Tran",
-        "email":      "ben.tran@example.com",
+        "email":      "doxdoxdox9+benjamin@gmail.com",
         "phone":      "0423 456 789",
         "subject":    "No hot water -- hot water system fault",
         "message":    (
@@ -62,7 +62,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Catherine",
         "last_name":  "Walsh",
-        "email":      "catherine.walsh@example.com",
+        "email":      "doxdoxdox9+catherine@gmail.com",
         "phone":      "0434 567 890",
         "subject":    "Blocked drain in bathroom",
         "message":    (
@@ -74,7 +74,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "David",
         "last_name":  "Okafor",
-        "email":      "david.okafor@example.com",
+        "email":      "doxdoxdox9+david@gmail.com",
         "phone":      "0445 678 901",
         "subject":    "Electrical fault -- power points not working",
         "message":    (
@@ -86,7 +86,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Emma",
         "last_name":  "Fitzgerald",
-        "email":      "emma.fitzgerald@example.com",
+        "email":      "doxdoxdox9+emma@gmail.com",
         "phone":      "0456 789 012",
         "subject":    "Ceiling fan installation -- two rooms",
         "message":    (
@@ -98,7 +98,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Frank",
         "last_name":  "Nguyen",
-        "email":      "frank.nguyen@example.com",
+        "email":      "doxdoxdox9+frank@gmail.com",
         "phone":      "0467 890 123",
         "subject":    "Air conditioning unit not cooling",
         "message":    (
@@ -110,7 +110,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Grace",
         "last_name":  "Patel",
-        "email":      "grace.patel@example.com",
+        "email":      "doxdoxdox9+grace@gmail.com",
         "phone":      "0478 901 234",
         "subject":    "Fence repair after storm damage",
         "message":    (
@@ -122,7 +122,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Henry",
         "last_name":  "Liu",
-        "email":      "henry.liu@example.com",
+        "email":      "doxdoxdox9+henry@gmail.com",
         "phone":      "0489 012 345",
         "subject":    "Interior painting -- lounge and hallway",
         "message":    (
@@ -134,7 +134,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "Isabella",
         "last_name":  "Santos",
-        "email":      "isabella.santos@example.com",
+        "email":      "doxdoxdox9+isabella@gmail.com",
         "phone":      "0490 123 456",
         "subject":    "Toilet cistern constantly running",
         "message":    (
@@ -146,7 +146,7 @@ SAMPLE_RECORDS = [
     {
         "first_name": "James",
         "last_name":  "Kowalski",
-        "email":      "james.kowalski@example.com",
+        "email":      "doxdoxdox9+james@gmail.com",
         "phone":      "0401 234 567",
         "subject":    "Smoke alarm installation -- rental compliance",
         "message":    (
