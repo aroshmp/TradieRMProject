@@ -49,6 +49,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
+from django.db import transaction
 
 from .models import (
     Booking,
@@ -134,7 +135,46 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='create-with-job')
     def create_with_job(self, request):
-        """UC2 -- Create a Customer record and a Job record in a single request."""
+        """
+        UC5 -- Create a Customer record, a Job record, and a Booking record
+        in a single atomic request.
+
+        This action replaces the original UC2-only implementation which created
+        only a Customer and a Job. The three-step New Customer Intake wizard on
+        the frontend now supplies booking date, time, and physical_address in
+        the same payload, requiring all three records to be created together.
+
+        Request body fields:
+            Customer (all required):
+                first_name       (str)
+                last_name        (str)
+                email_address    (str)
+                telephone_number (str)
+                physical_address (str)
+
+            Job (all required):
+                job_title        (str)
+                subject          (str)
+                client_message   (str)
+
+            Booking (all required):
+                date             (date) -- YYYY-MM-DD
+                time             (time) -- HH:MM
+
+            Note: physical_address is shared between the Customer record and
+            the Booking record. The value submitted is used for both.
+
+        Returns:
+            201 -- { customer: {...}, job: {...}, booking: {...} }
+            400 -- { field: [error message] } on validation failure
+
+        Atomicity:
+            All three records are created inside a single database transaction.
+            If any creation step fails the entire request is rolled back and
+            no partial records are persisted.
+        """
+
+        # -- Validate and prepare customer data via the existing serializer.
         customer_data = {
             'first_name':       request.data.get('first_name',       '').strip(),
             'last_name':        request.data.get('last_name',        '').strip(),
@@ -146,39 +186,63 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if not customer_serializer.is_valid():
             return Response(customer_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        job_title      = request.data.get('job_title',      '').strip()
-        subject        = request.data.get('subject',        '').strip()
+        # -- Validate job fields.
+        job_title = request.data.get('job_title', '').strip()
+        subject = request.data.get('subject', '').strip()
         client_message = request.data.get('client_message', '').strip()
+
+        # -- Validate booking fields.
+        date = request.data.get('date', '').strip()
+        time_value = request.data.get('time', '').strip()
+        physical_address = customer_data['physical_address']
 
         errors = {}
         if not job_title:
-            errors['job_title'] = 'Job title is required.'
+            errors['job_title'] = 'Job Title is required.'
         if not subject:
             errors['subject'] = 'Subject is required.'
         if not client_message:
-            errors['client_message'] = 'Client message is required.'
+            errors['client_message'] = 'Client Message is required.'
+        if not date:
+            errors['date'] = 'Booking Date is required.'
+        if not time_value:
+            errors['time'] = 'Booking Time is required.'
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
-        customer = customer_serializer.save()
-        job = Job.objects.create(
-            customer=customer,
-            job_title=job_title,
-            subject=subject,
-            client_message=client_message,
-            status=Job.Status.PENDING,
-            source=Job.Source.MANUAL,
-        )
+        # -- Create all three records atomically.
+        with transaction.atomic():
+            customer = customer_serializer.save()
+
+            job = Job.objects.create(
+                customer=customer,
+                job_title=job_title,
+                subject=subject,
+                client_message=client_message,
+                status=Job.Status.PENDING,
+                source=Job.Source.MANUAL,
+            )
+
+            booking = Booking.objects.create(
+                job=job,
+                customer=customer,
+                physical_address=physical_address,
+                date=date,
+                time=time_value,
+                status=Booking.Status.PENDING,
+            )
 
         logger.info(
-            "UC2 -- Customer #%s and Job #%s created by administrator '%s'.",
-            customer.pk, job.pk, request.user.username,
+            "UC5 -- Customer #%s, Job #%s, and Booking #%s created "
+            "by administrator '%s'.",
+            customer.pk, job.pk, booking.pk, request.user.username,
         )
 
         return Response(
             {
                 'customer': CustomerSerializer(customer).data,
-                'job':      JobSerializer(job).data,
+                'job': JobSerializer(job).data,
+                'booking': BookingSerializer(booking).data,
             },
             status=status.HTTP_201_CREATED,
         )
